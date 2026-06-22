@@ -169,7 +169,6 @@ class TestCheckEngine:
         req = CheckRequest.from_strings("document:doc3", "can_comment", "user:carol")
         assert engine.check(req).allowed is False
 
-
     def test_reused_relation_operand_is_path_local(self) -> None:
         registry = SchemaRegistry()
         ns = NamespaceDef(

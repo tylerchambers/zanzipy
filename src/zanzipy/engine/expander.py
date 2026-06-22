@@ -101,7 +101,6 @@ class ExpansionEngine:
             visited=visited,
         )
 
-
     def _expand_recursive(
         self,
         *,
@@ -337,4 +336,3 @@ class ExpansionEngine:
             )
             result = result.union(child)
         return result
-

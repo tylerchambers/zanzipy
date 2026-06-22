@@ -1,3 +1,5 @@
+import pytest
+
 from zanzipy.client import ZanzibarClient
 from zanzipy.engine_integration import ZanzibarEngine, configure_authorization
 from zanzipy.integration.decorators import authorizable_resource
@@ -149,7 +151,6 @@ class TestAuthorizableResourceDecorator:
         perms = d.get_permissions(alice)  # type: ignore[attr-defined]
         assert "view" in perms
 
-
     def test_group_userset_permissions_through_mixins(self) -> None:
         repo = InMemoryRelationRepository()
         client = ZanzibarClient(relations_repository=repo, schema=_group_registry())
@@ -200,3 +201,78 @@ class TestAuthorizableResourceDecorator:
         ]
         accessible = bob.get_accessible("doc", "viewer_without_banned")
         assert [str(obj) for obj in accessible] == ["doc:1"]
+
+
+class TestMixinContracts:
+    def test_get_accessible_preserves_zero_limit(self) -> None:
+        repo = InMemoryRelationRepository()
+        client = ZanzibarClient(relations_repository=repo, schema=_group_registry())
+        engine = ZanzibarEngine(client)
+        configure_authorization(engine)
+
+        @authorizable_resource("doc")
+        class Doc:
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+        class User(AuthorizableSubject):
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+            def get_subject_dict(self) -> dict:
+                return {"namespace": "user", "id": self.id}
+
+        doc = Doc("1")
+        bob = User("bob")
+        doc.grant(bob, "owner")  # type: ignore[attr-defined]
+
+        assert bob.get_accessible("doc", "owner", limit=0) == []
+
+    def test_reference_dicts_require_namespace_and_id(self) -> None:
+        class BadResource(AuthorizableGroup):
+            def get_resource_dict(self) -> dict:
+                return {"namespace": "group"}
+
+            def get_subject_dict(self) -> dict:
+                return {"namespace": "group", "id": "eng"}
+
+        class BadSubject(AuthorizableSubject):
+            def get_subject_dict(self) -> dict:
+                return {"id": "alice"}
+
+        with pytest.raises(ValueError, match="missing required key 'id'"):
+            BadResource().get_resource_ref()
+        with pytest.raises(ValueError, match="missing required key 'namespace'"):
+            BadSubject().get_subject_ref()
+
+    def test_decorated_resource_can_be_granted_as_subject(self) -> None:
+        reg = SchemaRegistry()
+        reg.register(
+            NamespaceDef(
+                name="doc",
+                relations=(
+                    RelationDef.with_subjects(
+                        "parent",
+                        (SubjectReference.from_dict({"namespace": "doc"}),),
+                    ),
+                ),
+                permissions=(
+                    PermissionDef(name="view", rewrite=ComputedUsersetRule("parent")),
+                ),
+            )
+        )
+        repo = InMemoryRelationRepository()
+        client = ZanzibarClient(relations_repository=repo, schema=reg)
+        configure_authorization(ZanzibarEngine(client))
+
+        @authorizable_resource("doc")
+        class Doc:
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+        child = Doc("child")
+        parent = Doc("parent")
+
+        child.grant(parent, "parent")  # type: ignore[attr-defined]
+
+        assert client.check("doc:child", "parent", "doc:parent")
