@@ -22,7 +22,7 @@ class RelationDef:
         self,
         *,
         name: str,
-        allowed_subjects: tuple[SubjectReference, ...] | SubjectReference,
+        allowed_subjects: SubjectReference | Iterable[SubjectReference],
         rewrite: RewriteRule | None = None,
         description: str | None = None,
     ) -> None:
@@ -55,15 +55,16 @@ class RelationDef:
 
     @staticmethod
     def _normalize_subject_references(
-        subjects: SubjectReference | tuple[SubjectReference, ...],
+        subjects: SubjectReference | Iterable[SubjectReference],
     ) -> tuple[SubjectReference, ...]:
-        """Coerce single or iterable subject refs into a tuple.
-
-        Ensures a stable internal representation regardless of input form.
-        """
+        """Coerce one or more subject refs into an immutable tuple."""
         if isinstance(subjects, SubjectReference):
             return (subjects,)
-        return subjects
+        normalized = tuple(subjects)
+        for subject in normalized:
+            if not isinstance(subject, SubjectReference):
+                raise TypeError("allowed_subjects must contain SubjectReference values")
+        return normalized
 
     @classmethod
     def with_subjects(
@@ -97,5 +98,5 @@ class RelationDef:
                 SubjectReference.from_dict(s) for s in data["allowed_subjects"]
             ],
             rewrite=RewriteRule.from_dict(data["rewrite"]) if data["rewrite"] else None,
-            description=data["description"],
+            description=data.get("description"),
         )

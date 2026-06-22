@@ -109,6 +109,44 @@ class TestNamespaceDef:
                 permissions=(perm,),
             )
 
+    def test_duplicate_relation_names_raise(self) -> None:
+        subjects = (SubjectReference(namespace=NamespaceId("user")),)
+        relation = RelationDef(name="viewer", allowed_subjects=subjects)
+        duplicate = RelationDef(name="viewer", allowed_subjects=subjects)
+
+        with pytest.raises(ValueError, match=r"Duplicate relation names"):
+            NamespaceDef(name="document", relations=(relation, duplicate))
+
+    def test_duplicate_permission_names_raise(self) -> None:
+        subjects = (SubjectReference(namespace=NamespaceId("user")),)
+        relation = RelationDef(name="viewer", allowed_subjects=subjects)
+        permission = PermissionDef(
+            name="can_view", rewrite=ComputedUsersetRule("viewer")
+        )
+        duplicate = PermissionDef(
+            name="can_view", rewrite=ComputedUsersetRule("viewer")
+        )
+
+        with pytest.raises(ValueError, match=r"Duplicate permission names"):
+            NamespaceDef(
+                name="document",
+                relations=(relation,),
+                permissions=(permission, duplicate),
+            )
+
+    def test_definition_maps_are_immutable(self) -> None:
+        subjects = (SubjectReference(namespace=NamespaceId("user")),)
+        ns = NamespaceDef(
+            name="document",
+            relations=(RelationDef(name="viewer", allowed_subjects=subjects),),
+        )
+
+        with pytest.raises(TypeError):
+            ns.relations["owner"] = RelationDef(  # type: ignore[index]
+                name="owner",
+                allowed_subjects=subjects,
+            )
+
     def test_permission_forbids_this_and_direct(self) -> None:
         with pytest.raises(ValueError, match=r"not valid in permissions"):
             NamespaceDef(
@@ -152,19 +190,17 @@ class TestNamespaceDef:
                 tuple_relation="parent", computed_relation="missing"
             ),
         )
-        # Provide 'parent' relation so first half is satisfied
         parent_rel = RelationDef(
             name="parent",
             allowed_subjects=(SubjectReference(namespace=NamespaceId("doc")),),
         )
-        with pytest.raises(
-            ValueError, match=r"tuple_to_userset\.computed_relation 'missing'"
-        ):
-            NamespaceDef(
-                name="doc",
-                relations=(parent_rel,),
-                permissions=(perm2,),
-            )
+
+        ns = NamespaceDef(
+            name="doc",
+            relations=(parent_rel,),
+            permissions=(perm2,),
+        )
+        assert "p2" in ns.permissions
 
     def test_relation_computed_userset_unknown_raises(self) -> None:
         subjects = (SubjectReference(namespace=NamespaceId("user")),)
@@ -206,13 +242,11 @@ class TestNamespaceDef:
                 tuple_relation="parent", computed_relation="missing"
             ),
         )
-        with pytest.raises(
-            ValueError, match=r"tuple_to_userset\.computed_relation 'missing'"
-        ):
-            NamespaceDef(
-                name="doc",
-                relations=(parent, viewer, bad2),
-            )
+        ns = NamespaceDef(
+            name="doc",
+            relations=(parent, viewer, bad2),
+        )
+        assert "bad2" in ns.relations
 
     def test_from_dict_key_mismatch_raises(self) -> None:
         data = {
@@ -231,7 +265,5 @@ class TestNamespaceDef:
             },
             "permissions": {},
         }
-        ns = NamespaceDef.from_dict(data)
-        ns_dict = ns.to_dict()
-        assert "wrong" in ns_dict["relations"]
-        assert "viewer" not in ns_dict["relations"]
+        with pytest.raises(ValueError, match=r"Relation mapping key 'viewer'"):
+            NamespaceDef.from_dict(data)

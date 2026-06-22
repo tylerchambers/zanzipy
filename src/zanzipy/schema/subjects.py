@@ -19,7 +19,7 @@ class SubjectReference:
         self,
         *,
         namespace: NamespaceId | str,
-        relation: Rel | None = None,
+        relation: Rel | str | None = None,
         wildcard: bool = False,
     ) -> None:
         # Normalize and validate inputs
@@ -28,12 +28,19 @@ class SubjectReference:
         elif not isinstance(namespace, NamespaceId):
             raise TypeError("namespace must be NamespaceId or str")
 
+        if isinstance(relation, str):
+            relation = Rel(relation)
+        elif relation is not None and not isinstance(relation, Rel):
+            raise TypeError("relation must be Relation, str, or None")
+
+        if not isinstance(wildcard, bool):
+            raise TypeError("wildcard must be bool")
         if wildcard and relation is not None:
             raise ValueError("wildcard and relation are mutually exclusive")
 
         self._namespace = namespace
         self._relation = relation
-        self._wildcard = bool(wildcard)
+        self._wildcard = wildcard
 
     @property
     def namespace(self) -> NamespaceId:
@@ -46,6 +53,24 @@ class SubjectReference:
     @property
     def wildcard(self) -> bool:
         return self._wildcard
+
+    def allows(
+        self,
+        *,
+        namespace: str,
+        entity_id: str,
+        relation: str | None,
+    ) -> bool:
+        """Return whether a concrete tuple subject matches this schema reference."""
+        if self.namespace.value != namespace:
+            return False
+        if self.wildcard:
+            return relation is None and entity_id == "*"
+        if entity_id == "*":
+            return False
+        if self.relation is None:
+            return relation is None
+        return relation is not None and self.relation.value == relation
 
     def to_dict(self) -> dict:
         return {
@@ -74,5 +99,5 @@ class SubjectReference:
         return cls(
             namespace=NamespaceId(data["namespace"]),
             relation=Rel(relation) if relation else None,
-            wildcard=bool(data.get("wildcard")),
+            wildcard=data.get("wildcard", False),
         )

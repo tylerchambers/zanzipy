@@ -1,15 +1,10 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import Self
 
 from zanzipy.models.relation import Relation as Rel
 
+from .rules import RewriteRule
 from .types import SchemaDefinitionType
-
-if TYPE_CHECKING:
-    from .rules import RewriteRule
-else:
-    # For runtime use in from_dict
-    from .rules import RewriteRule
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,5 +32,5 @@ class PermissionDef:
         return cls(
             name=data["name"],
             rewrite=RewriteRule.from_dict(data["rewrite"]),
-            description=data["description"],
+            description=data.get("description"),
         )

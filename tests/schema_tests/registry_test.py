@@ -5,7 +5,7 @@ from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
 from zanzipy.schema.registry import SchemaRegistry
 from zanzipy.schema.relations import RelationDef
-from zanzipy.schema.rules import ComputedUsersetRule, UnionRule
+from zanzipy.schema.rules import ComputedUsersetRule, TupleToUsersetRule, UnionRule
 from zanzipy.schema.subjects import SubjectReference
 
 
@@ -164,17 +164,107 @@ class TestSchemaRegistry:
         with pytest.raises(ValueError, match=r"Unknown namespace: document"):
             registry.update_many([base])
 
+    def test_register_many_validates_tuple_to_userset_target_namespace(self) -> None:
+        subjects = (SubjectReference(namespace=NamespaceId("user")),)
+        folder = NamespaceDef(
+            name="folder",
+            relations=(RelationDef(name="viewer", allowed_subjects=subjects),),
+        )
+        document = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef(
+                    name="parent",
+                    allowed_subjects=(
+                        SubjectReference(namespace=NamespaceId("folder")),
+                    ),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="can_view",
+                    rewrite=TupleToUsersetRule(
+                        tuple_relation="parent",
+                        computed_relation="viewer",
+                    ),
+                ),
+            ),
+        )
+        registry = SchemaRegistry()
+
+        registry.register_many([document, folder])
+
+        assert registry.list_namespaces() == ["document", "folder"]
+
+    def test_register_many_rejects_missing_tuple_to_userset_target(self) -> None:
+        document = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef(
+                    name="parent",
+                    allowed_subjects=(
+                        SubjectReference(namespace=NamespaceId("folder")),
+                    ),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="can_view",
+                    rewrite=TupleToUsersetRule(
+                        tuple_relation="parent",
+                        computed_relation="viewer",
+                    ),
+                ),
+            ),
+        )
+        registry = SchemaRegistry()
+
+        with pytest.raises(
+            ValueError,
+            match=r"folder#viewer'.*not a known relation or permission",
+        ):
+            registry.register_many([document, NamespaceDef(name="folder")])
+
+        assert registry.list_namespaces() == []
+
+    def test_register_rejects_missing_subject_set_namespace(self) -> None:
+        document = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef(
+                    name="viewer",
+                    allowed_subjects=(
+                        SubjectReference(
+                            namespace=NamespaceId("group"),
+                            relation="member",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        registry = SchemaRegistry()
+
+        with pytest.raises(
+            ValueError,
+            match=r"allowed subject namespace 'group' is not registered",
+        ):
+            registry.register(document)
+
     def test_diff_namespaces(self) -> None:
         old = _basic_namespace()
         subjects = (SubjectReference(namespace=NamespaceId("user")),)
         new_relations = (
-            *tuple(old.relations.values()),
-            RelationDef(name="contributor", allowed_subjects=subjects),
-            RelationDef(
-                name="viewer",
-                allowed_subjects=subjects,
-                rewrite=ComputedUsersetRule("owner"),
+            *(
+                RelationDef(
+                    name="viewer",
+                    allowed_subjects=subjects,
+                    rewrite=ComputedUsersetRule("owner"),
+                )
+                if relation.name == "viewer"
+                else relation
+                for relation in old.relations.values()
             ),
+            RelationDef(name="contributor", allowed_subjects=subjects),
         )
         new = NamespaceDef(
             name=old.name,

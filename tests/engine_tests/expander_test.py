@@ -41,7 +41,16 @@ class TestExpansionEngine:
             ),
             permissions=(),
         )
-        registry.register(ns)
+        group = NamespaceDef(
+            name="group",
+            relations=(
+                RelationDef.with_subjects(
+                    "member", (SubjectReference.from_dict({"namespace": "user"}),)
+                ),
+            ),
+            permissions=(),
+        )
+        registry.register_many([ns, group])
 
         repo = InMemoryRelationRepository()
         repo.write(RelationTuple.from_string("document:doc#owner@user:alice"))

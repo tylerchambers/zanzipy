@@ -69,6 +69,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from zanzipy.models.relation import Relation as Rel
 from zanzipy.schema.types import RewriteRuleType
 
 # Type aliases for readability
@@ -119,7 +120,25 @@ class RewriteRule(ABC):
         raise AssertionError(f"Unhandled RewriteRule type: {rule_type}")
 
 
-@dataclass(frozen=True)
+def _normalize_children(
+    children: tuple[RewriteRule, ...],
+    rule_name: str,
+) -> tuple[RewriteRule, ...]:
+    normalized = tuple(children)
+    if not normalized:
+        raise ValueError(f"{rule_name} requires at least one child")
+    for child in normalized:
+        if not isinstance(child, RewriteRule):
+            raise TypeError(f"{rule_name} children must be rewrite rules")
+    return normalized
+
+
+def _require_rule(value: RewriteRule, operand_name: str) -> None:
+    if not isinstance(value, RewriteRule):
+        raise TypeError(f"{operand_name} must be a rewrite rule")
+
+
+@dataclass(frozen=True, slots=True)
 class ThisRule(RewriteRule):
     """Leaf that references the direct (stored) membership of the relation."""
 
@@ -129,7 +148,7 @@ class ThisRule(RewriteRule):
         return {"type": self.type}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ComputedUsersetRule(RewriteRule):
     """Leaf that references another relation by name."""
 
@@ -137,17 +156,24 @@ class ComputedUsersetRule(RewriteRule):
 
     type: RewriteRuleType = field(default=RewriteRuleType.COMPUTED_USERSET, init=False)
 
+    def __post_init__(self) -> None:
+        Rel(self.relation)
+
     def to_dict(self) -> dict:
         return {"type": self.type, "relation": self.relation}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TupleToUsersetRule(RewriteRule):
     """Tuple-to-userset: follow a relation on the object
     to a relation on the subject."""
 
     tuple_relation: RelationName
     computed_relation: RelationName
+
+    def __post_init__(self) -> None:
+        Rel(self.tuple_relation)
+        Rel(self.computed_relation)
 
     def to_dict(self) -> dict:
         return {
@@ -159,7 +185,7 @@ class TupleToUsersetRule(RewriteRule):
     type: RewriteRuleType = field(default=RewriteRuleType.TUPLE_TO_USERSET, init=False)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DirectRule(RewriteRule):
     """Direct relation assignment (stored tuples).
 
@@ -176,7 +202,7 @@ class DirectRule(RewriteRule):
         return {"type": self.type}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class UnionRule(RewriteRule):
     """Union: access is granted if any of the children relations grant it.
 
@@ -192,13 +218,20 @@ class UnionRule(RewriteRule):
     # Children are nested rewrite rules; operands must be typed nodes
     children: tuple[RewriteRule, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "children",
+            _normalize_children(self.children, "union"),
+        )
+
     def to_dict(self) -> dict:
         return {"type": self.type, "children": [c.to_dict() for c in self.children]}
 
     type: RewriteRuleType = field(default=RewriteRuleType.UNION, init=False)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class IntersectionRule(RewriteRule):
     """Intersection: access requires all children relations to grant it.
 
@@ -214,13 +247,20 @@ class IntersectionRule(RewriteRule):
     # Children are nested rewrite rules; operands must be typed nodes
     children: tuple[RewriteRule, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "children",
+            _normalize_children(self.children, "intersection"),
+        )
+
     def to_dict(self) -> dict:
         return {"type": self.type, "children": [c.to_dict() for c in self.children]}
 
     type: RewriteRuleType = field(default=RewriteRuleType.INTERSECTION, init=False)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ExclusionRule(RewriteRule):
     """Exclusion: grant from base but not from subtract.
 
@@ -237,6 +277,10 @@ class ExclusionRule(RewriteRule):
     # Operands are nested rewrite rules; operands must be typed nodes
     base: RewriteRule
     subtract: RewriteRule
+
+    def __post_init__(self) -> None:
+        _require_rule(self.base, "base")
+        _require_rule(self.subtract, "subtract")
 
     def to_dict(self) -> dict:
         return {
