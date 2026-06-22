@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from zanzipy.engine.resolver import RuleResolver
 from zanzipy.models.check import CheckRequest, CheckResponse
@@ -47,7 +47,7 @@ class CheckEngine:
     def __init__(
         self,
         *,
-        relations_repository: RelationRepository[Any, Any],
+        relations_repository: RelationRepository,
         schema: SchemaRegistry,
         max_depth: int = 25,
         enable_debug: bool = False,

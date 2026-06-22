@@ -1,8 +1,6 @@
+from zanzipy.models.filter import TupleFilter
 from zanzipy.models.tuple import RelationTuple
-from zanzipy.storage.repos.concrete.memory.relations import (
-    InMemoryRelationRepository,
-    MemoryTupleFilter,
-)
+from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
 
 
 class TestInMemoryRelationRepository:
@@ -11,8 +9,11 @@ class TestInMemoryRelationRepository:
         t = RelationTuple.from_string("document:doc1#owner@user:alice")
 
         repo.write(t)
+        repo.write(t)
+
         assert repo.get(t) == t
         assert repo.exists(t)
+        assert list(repo.read(TupleFilter())) == [t]
 
     def test_delete_and_delete_by_key(self) -> None:
         repo = InMemoryRelationRepository()
@@ -30,15 +31,13 @@ class TestInMemoryRelationRepository:
         t3 = RelationTuple.from_string("document:doc2#viewer@user:bob")
         repo.write_many([t1, t2, t3])
 
-        results = list(
-            repo.read(MemoryTupleFilter(object_type="document", object_id="doc1"))
-        )
-        assert set(results) == {t1, t2}
+        results = list(repo.read(TupleFilter(object_type="document", object_id="doc1")))
+        assert results == [t1, t2]
 
-        results = list(repo.read(MemoryTupleFilter(relation="viewer")))
-        assert set(results) == {t1, t3}
+        results = list(repo.read(TupleFilter(relation="viewer")))
+        assert results == [t1, t3]
 
-    def test_find_reverse_by_subject(self) -> None:
+    def test_reverse_read_applies_all_filter_fields(self) -> None:
         repo = InMemoryRelationRepository()
         t1 = RelationTuple.from_string("document:doc1#viewer@user:bob")
         t2 = RelationTuple.from_string("document:doc2#owner@user:bob")
@@ -46,9 +45,15 @@ class TestInMemoryRelationRepository:
         repo.write_many([t1, t2, t3])
 
         results = list(
-            repo.read_reverse(MemoryTupleFilter(subject_type="user", subject_id="bob"))
+            repo.read_reverse(
+                TupleFilter(
+                    subject_type="user",
+                    subject_id="bob",
+                    relation="viewer",
+                )
+            )
         )
-        assert set(results) == {t1, t2}
+        assert results == [t1]
 
     def test_delete_where(self) -> None:
         repo = InMemoryRelationRepository()
@@ -57,6 +62,6 @@ class TestInMemoryRelationRepository:
         t3 = RelationTuple.from_string("document:doc2#viewer@user:bob")
         repo.write_many([t1, t2, t3])
 
-        deleted = repo.delete_where(MemoryTupleFilter(object_id="doc1"))
+        deleted = repo.delete_where(TupleFilter(object_id="doc1"))
         assert deleted == 2
-        assert set(repo.read(MemoryTupleFilter())) == {t3}
+        assert list(repo.read(TupleFilter())) == [t3]

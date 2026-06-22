@@ -1,98 +1,34 @@
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+"""Deterministic in-memory relation tuple repository."""
 
-from zanzipy.models.tuple import RelationTuple
+from collections.abc import Iterable  # noqa: TC003
+
+from zanzipy.models.filter import TupleFilter  # noqa: TC001
+from zanzipy.models.tuple import RelationTuple  # noqa: TC001
 from zanzipy.storage.repos.abstract.relations import RelationRepository
 
-if TYPE_CHECKING:
-    from collections.abc import Iterable
 
-    from zanzipy.models.filter import TupleFilter
+class InMemoryRelationRepository(RelationRepository):
+    """In-memory ``RelationRepository`` for tests and local prototypes.
 
-
-@dataclass(frozen=True, slots=True)
-class MemoryTupleFilter:
-    """Filter used by the in-memory relation repository.
-
-    Mirrors ``TupleFilter`` so this backend can be drop-in for tests.
-    """
-
-    object_type: str | None = None
-    object_id: str | None = None
-    relation: str | None = None
-    subject_type: str | None = None
-    subject_id: str | None = None
-    subject_relation: str | None = None
-
-
-class InMemoryRelationRepository(RelationRepository[RelationTuple, MemoryTupleFilter]):
-    """In-memory implementation of RelationRepository.
-
-    Not thread-safe; intended for tests and local prototypes.
+    The repository preserves first-write order for deterministic reads while
+    still treating the tuple's canonical string form as the idempotency key.
+    It is not thread-safe.
     """
 
     def __init__(self) -> None:
-        self._items: set[RelationTuple] = set()
+        self._tuples: dict[str, RelationTuple] = {}
 
     def upsert(self, entity: RelationTuple) -> None:
-        self._items.add(entity)
+        self._tuples[str(entity)] = entity
 
     def delete_by_key(self, key: RelationTuple) -> bool:
-        try:
-            self._items.remove(key)
-            return True
-        except KeyError:
-            return False
+        return self._tuples.pop(str(key), None) is not None
 
     def get(self, key: RelationTuple) -> RelationTuple | None:
-        return key if key in self._items else None
+        return self._tuples.get(str(key))
 
-    def find(self, filter: MemoryTupleFilter) -> Iterable[RelationTuple]:
-        for t in self._items:
-            if (
-                filter.object_type is not None
-                and str(t.object.namespace) != filter.object_type
-            ):
-                continue
-            if filter.object_id is not None and str(t.object.id) != filter.object_id:
-                continue
-            if filter.relation is not None and str(t.relation) != filter.relation:
-                continue
-            if (
-                filter.subject_type is not None
-                and str(t.subject.namespace) != filter.subject_type
-            ):
-                continue
-            if filter.subject_id is not None and str(t.subject.id) != filter.subject_id:
-                continue
-            if filter.subject_relation is not None:
-                if t.subject.relation is None:
-                    continue
-                if str(t.subject.relation) != filter.subject_relation:
-                    continue
-            yield t
+    def read(self, filter: TupleFilter) -> Iterable[RelationTuple]:
+        return [tuple_ for tuple_ in self._tuples.values() if filter.matches(tuple_)]
 
-    def read(self, filter: MemoryTupleFilter) -> Iterable[RelationTuple]:
-        return self.find(filter)
-
-    def read_reverse(self, filter: MemoryTupleFilter) -> Iterable[RelationTuple]:
-        for t in self._items:
-            if (
-                filter.subject_type is not None
-                and str(t.subject.namespace) != filter.subject_type
-            ):
-                continue
-            if filter.subject_id is not None and str(t.subject.id) != filter.subject_id:
-                continue
-            if filter.subject_relation is not None:
-                if t.subject.relation is None:
-                    continue
-                if str(t.subject.relation) != filter.subject_relation:
-                    continue
-            yield t
-
-    def by_object_filter(self, tuple_filter: TupleFilter) -> MemoryTupleFilter:
-        return MemoryTupleFilter(
-            object_type=tuple_filter.object_type,
-            object_id=tuple_filter.object_id,
-        )
+    def read_reverse(self, filter: TupleFilter) -> Iterable[RelationTuple]:
+        return self.read(filter)

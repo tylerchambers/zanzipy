@@ -4,7 +4,7 @@ from zanzipy.storage.repos.concrete.sqlite import SQLiteRelationRepository
 
 
 class TestSQLiteRelationRepository:
-    def test_write_read_delete_roundtrip(self) -> None:
+    def test_write_read_get_delete_roundtrip(self) -> None:
         repo = SQLiteRelationRepository()
 
         t1 = RelationTuple.from_string("document:doc1#owner@user:alice")
@@ -14,21 +14,48 @@ class TestSQLiteRelationRepository:
         repo.write(t1)
         repo.write_many([t2, t3])
 
-        # Forward read by object
+        assert repo.get(t1) == t1
+        assert repo.exists(t1)
+
         results = list(
             repo.read(
                 TupleFilter(object_type="document", object_id="doc1", relation="owner")
             )
         )
-        subjects = {str(t.subject) for t in results}
-        assert subjects == {"user:alice", "user:bob"}
+        assert {str(t.subject) for t in results} == {"user:alice", "user:bob"}
 
-        # Reverse read by subject
         rev_results = list(
             repo.read_reverse(TupleFilter(subject_type="user", subject_id="alice"))
         )
-        assert any(str(t) == str(t1) for t in rev_results)
+        assert rev_results == [t1]
 
-        # Delete
-        assert repo.delete(t1) is True
-        assert repo.delete(t1) is False
+        assert repo.delete_by_key(t1) is True
+        assert repo.delete_by_key(t1) is False
+        assert repo.get(t1) is None
+
+    def test_upsert_is_idempotent_for_direct_subjects(self) -> None:
+        repo = SQLiteRelationRepository()
+        direct = RelationTuple.from_string("document:doc1#viewer@user:alice")
+        userset = RelationTuple.from_string("document:doc1#viewer@group:eng#member")
+
+        repo.write_many([direct, direct, userset, userset])
+
+        assert set(repo.read(TupleFilter())) == {direct, userset}
+
+    def test_reverse_read_applies_all_filter_fields(self) -> None:
+        repo = SQLiteRelationRepository()
+        viewer = RelationTuple.from_string("document:doc1#viewer@user:alice")
+        owner = RelationTuple.from_string("document:doc2#owner@user:alice")
+        other = RelationTuple.from_string("document:doc3#viewer@user:bob")
+        repo.write_many([viewer, owner, other])
+
+        results = list(
+            repo.read_reverse(
+                TupleFilter(
+                    subject_type="user",
+                    subject_id="alice",
+                    relation="viewer",
+                )
+            )
+        )
+        assert results == [viewer]

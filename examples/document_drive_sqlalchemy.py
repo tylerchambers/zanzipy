@@ -215,8 +215,8 @@ Base.metadata.create_all(bind=engine)
 
 # Create authorization tables
 rel_repo = SQLAlchemyRelationRepository(SessionLocal)
-# The relation repo exposes metadata on the instance; rules metadata is module-level
-rel_repo._metadata.create_all(bind=engine)
+# Create the authorization schema through the repository's public API.
+rel_repo.create_schema(engine)
 
 
 # Optional: enable an in-memory LRU cache for hot relation tuple reads.

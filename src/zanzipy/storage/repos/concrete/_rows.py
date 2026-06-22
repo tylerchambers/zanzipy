@@ -1,0 +1,124 @@
+"""Storage-row helpers shared by concrete relation repositories."""
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from zanzipy.models.tuple import RelationTuple
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
+    from zanzipy.models.filter import TupleFilter
+
+SUBJECT_RELATION_NONE = ""
+
+RELATION_TUPLE_COLUMNS = (
+    "tuple_key",
+    "object_ns",
+    "object_id",
+    "relation",
+    "subject_ns",
+    "subject_id",
+    "subject_rel",
+)
+
+_FILTER_COLUMNS = (
+    ("object_type", "object_ns"),
+    ("object_id", "object_id"),
+    ("relation", "relation"),
+    ("subject_type", "subject_ns"),
+    ("subject_id", "subject_id"),
+    ("subject_relation", "subject_rel"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRelationTuple:
+    """Database representation of a relation tuple.
+
+    ``subject_rel`` is always non-null in storage. The empty string represents a
+    direct subject because relation identifiers are validated as non-empty.
+    """
+
+    tuple_key: str
+    object_ns: str
+    object_id: str
+    relation: str
+    subject_ns: str
+    subject_id: str
+    subject_rel: str
+
+    @classmethod
+    def from_tuple(cls, tuple_: RelationTuple) -> StoredRelationTuple:
+        return cls(
+            tuple_key=str(tuple_),
+            object_ns=str(tuple_.object.namespace),
+            object_id=str(tuple_.object.id),
+            relation=str(tuple_.relation),
+            subject_ns=str(tuple_.subject.namespace),
+            subject_id=str(tuple_.subject.id),
+            subject_rel=(
+                SUBJECT_RELATION_NONE
+                if tuple_.subject.relation is None
+                else str(tuple_.subject.relation)
+            ),
+        )
+
+    @classmethod
+    def from_mapping(cls, row: Mapping[str, object]) -> StoredRelationTuple:
+        subject_rel = row["subject_rel"]
+        return cls(
+            tuple_key=str(row["tuple_key"]),
+            object_ns=str(row["object_ns"]),
+            object_id=str(row["object_id"]),
+            relation=str(row["relation"]),
+            subject_ns=str(row["subject_ns"]),
+            subject_id=str(row["subject_id"]),
+            subject_rel=(
+                SUBJECT_RELATION_NONE if subject_rel is None else str(subject_rel)
+            ),
+        )
+
+    def as_values(self) -> dict[str, str]:
+        """Return column values suitable for SQL parameter binding."""
+
+        return {
+            "tuple_key": self.tuple_key,
+            "object_ns": self.object_ns,
+            "object_id": self.object_id,
+            "relation": self.relation,
+            "subject_ns": self.subject_ns,
+            "subject_id": self.subject_id,
+            "subject_rel": self.subject_rel,
+        }
+
+    def to_tuple(self) -> RelationTuple:
+        """Return the public ``RelationTuple`` represented by this row."""
+
+        subject_suffix = f"#{self.subject_rel}" if self.subject_rel else ""
+        return RelationTuple.from_string(
+            f"{self.object_ns}:{self.object_id}#{self.relation}"
+            f"@{self.subject_ns}:{self.subject_id}{subject_suffix}"
+        )
+
+
+def unique_stored_tuples(tuples: Iterable[RelationTuple]) -> list[StoredRelationTuple]:
+    """Return stored rows de-duplicated by canonical tuple key in input order."""
+
+    rows: dict[str, StoredRelationTuple] = {}
+    for tuple_ in tuples:
+        row = StoredRelationTuple.from_tuple(tuple_)
+        rows.setdefault(row.tuple_key, row)
+    return list(rows.values())
+
+
+def filter_values(filter: TupleFilter) -> list[tuple[str, str]]:
+    """Return storage column comparisons for the populated filter fields."""
+
+    values: list[tuple[str, str]] = []
+    for attr_name, column_name in _FILTER_COLUMNS:
+        value = getattr(filter, attr_name)
+        if value is None:
+            continue
+        values.append((column_name, value))
+    return values
