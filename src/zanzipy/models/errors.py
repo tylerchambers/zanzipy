@@ -10,5 +10,9 @@ class EntityIdValidationError(ValueError):
     """Raised when an entity id value is invalid."""
 
 
+class ObjectValidationError(ValueError):
+    """Raised when an object string or components are invalid."""
+
+
 class SubjectValidationError(ValueError):
     """Raised when a subject string or components are invalid."""

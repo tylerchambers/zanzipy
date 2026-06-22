@@ -1,6 +1,12 @@
 import pytest
 
-from zanzipy.models import EntityId, IdentifierValidationError, NamespaceId, Obj
+from zanzipy.models import (
+    EntityId,
+    IdentifierValidationError,
+    NamespaceId,
+    Obj,
+    ObjectValidationError,
+)
 
 
 class TestObj:
@@ -23,6 +29,14 @@ class TestObj:
         o = Obj.from_string("document:readme")
         assert isinstance(o, Obj)
         assert str(o) == "document:readme"
+
+    def test_from_string_rejects_missing_separator(self) -> None:
+        with pytest.raises(ObjectValidationError):
+            Obj.from_string("document")
+
+    def test_direct_instantiation_rejects_raw_strings(self) -> None:
+        with pytest.raises(TypeError):
+            Obj("document", EntityId("readme"))  # type: ignore[arg-type]
 
     def test_to_from_dict_round_trip(self) -> None:
         original = Obj(NamespaceId("document"), EntityId("readme"))

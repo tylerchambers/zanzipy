@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Self
 
-from zanzipy.models.relation import Relation as Rel
+from zanzipy.models import Relation as Rel
 
 from .rules import RewriteRule
 from .subjects import SubjectReference

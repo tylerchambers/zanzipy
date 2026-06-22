@@ -1,9 +1,7 @@
 from typing import TYPE_CHECKING, Any
 
 from zanzipy.integration.mixins import AuthorizableResource
-from zanzipy.models.id import EntityId
-from zanzipy.models.namespace import NamespaceId
-from zanzipy.models.object import Obj
+from zanzipy.models import EntityId, NamespaceId, Obj
 
 if TYPE_CHECKING:
     from collections.abc import Callable

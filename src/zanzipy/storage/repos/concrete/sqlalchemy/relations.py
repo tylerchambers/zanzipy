@@ -16,8 +16,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.engine import Engine
 
-    from zanzipy.models.filter import TupleFilter
-    from zanzipy.models.tuple import RelationTuple
+    from zanzipy.models import RelationTuple, TupleFilter
 
 _TABLE_NAME = "relation_tuples"
 

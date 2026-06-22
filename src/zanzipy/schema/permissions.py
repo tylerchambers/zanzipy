@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Self
 
-from zanzipy.models.relation import Relation as Rel
+from zanzipy.models import Relation as Rel
 
 from .rules import RewriteRule
 from .types import SchemaDefinitionType

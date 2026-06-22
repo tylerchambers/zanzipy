@@ -41,7 +41,7 @@ class DefaultRedisTupleCodec:
         return json.dumps([str(t) for t in tuples])
 
     def decode(self, data: bytes | str) -> list[RelationTuple]:
-        from zanzipy.models.tuple import RelationTuple as RT
+        from zanzipy.models import RelationTuple as RT
 
         s = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
         items = json.loads(s)

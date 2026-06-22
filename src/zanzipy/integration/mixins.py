@@ -12,8 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from zanzipy.engine.expander import SubjectSet
-    from zanzipy.models.object import Obj
-    from zanzipy.models.subject import Subject
+    from zanzipy.models import Obj, Subject
 
 
 class AuthorizableResource:
@@ -34,7 +33,7 @@ class AuthorizableResource:
             raw = self.get_resource_dict()
         except NotImplementedError as exc:  # no dict implementation provided
             raise NotImplementedError from exc
-        from zanzipy.models.object import Obj as _Obj
+        from zanzipy.models import Obj as _Obj
 
         return _Obj.from_dict(_coerce_obj_dict(raw))
 
@@ -71,7 +70,7 @@ class AuthorizableResource:
             permission=permission, resource=self.get_resource_ref()
         )
         # Convert canonical strings to Subject objects
-        from zanzipy.models.subject import Subject as _Subject
+        from zanzipy.models import Subject as _Subject
 
         results: list[_Subject] = []
         for s in sorted(subject_set.users | subject_set.usersets):
@@ -104,7 +103,7 @@ class AuthorizableSubject:
             raw = self.get_subject_dict()
         except NotImplementedError as exc:  # no dict implementation provided
             raise NotImplementedError from exc
-        from zanzipy.models.subject import Subject as _Subject
+        from zanzipy.models import Subject as _Subject
 
         return _Subject.from_dict(_coerce_subject_dict(raw))
 
@@ -156,18 +155,16 @@ def _normalize_to_subject(value: object) -> Subject:
     - str (parsed as Subject string form)
     """
 
-    from zanzipy.models.object import Obj as _Obj
-    from zanzipy.models.subject import Subject as _Subject
+    from zanzipy.models import Obj as _Obj, Subject as _Subject
 
     if isinstance(value, AuthorizableSubject):
         return value.get_subject_ref()
     if isinstance(value, AuthorizableResource):
-        obj = value.get_resource_ref()
-        return _Subject(namespace=obj.namespace, id=obj.id)
+        return _Subject.from_object(value.get_resource_ref())
     if isinstance(value, _Subject):
         return value
     if isinstance(value, _Obj):
-        return _Subject(namespace=value.namespace, id=value.id)
+        return _Subject.from_object(value)
 
     get_subject_ref = getattr(value, "get_subject_ref", None)
     if callable(get_subject_ref):
@@ -178,7 +175,7 @@ def _normalize_to_subject(value: object) -> Subject:
     if callable(get_resource_ref):
         obj = get_resource_ref()
         if isinstance(obj, _Obj):
-            return _Subject(namespace=obj.namespace, id=obj.id)
+            return _Subject.from_object(obj)
 
     if isinstance(value, str):
         return _Subject.from_string(value)

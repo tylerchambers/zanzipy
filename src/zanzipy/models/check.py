@@ -2,8 +2,6 @@ from dataclasses import dataclass
 from typing import Self
 
 from .filter import TupleFilter
-from .id import EntityId
-from .namespace import NamespaceId
 from .object import Obj
 from .relation import Relation
 from .subject import Subject
@@ -20,12 +18,9 @@ class CheckRequest:
     subject_id: str
 
     def __post_init__(self) -> None:
-        # Validate components using existing value objects
-        NamespaceId(self.object_type)
-        EntityId(self.object_id)
-        Relation(self.relation)
-        NamespaceId(self.subject_type)
-        EntityId(self.subject_id)
+        self.to_object()
+        self.to_relation()
+        self.to_subject()
 
     @property
     def object(self) -> str:
@@ -63,10 +58,7 @@ class CheckRequest:
 
         Requires a direct subject (no subject relation on the subject set).
         """
-        if subject.relation is not None:
-            raise ValueError(
-                "CheckRequest requires a direct subject (no subject relation)"
-            )
+        subject.require_direct()
         return cls(
             object_type=str(obj.namespace),
             object_id=str(obj.id),
@@ -81,45 +73,27 @@ class CheckRequest:
 
         The subject must be direct (no '#relation' allowed).
         """
-        if ":" not in object_str:
-            raise ValueError("object must be in 'namespace:id' form")
-        obj_ns, obj_id = object_str.split(":", 1)
-        # Validate using value objects
-        obj_namespace = NamespaceId(obj_ns)
-        obj_entity_id = EntityId(obj_id)
-
-        # Reuse Subject.parse to leverage validation and detect subject sets
-        subject = Subject.from_string(subject_str)
-        if subject.relation is not None:
-            raise ValueError(
-                "CheckRequest requires a direct subject (no subject relation)"
-            )
-
-        return cls(
-            object_type=str(obj_namespace),
-            object_id=str(obj_entity_id),
-            relation=str(Relation(relation)),
-            subject_type=str(subject.namespace),
-            subject_id=str(subject.id),
+        return cls.from_parts(
+            Obj.from_string(object_str),
+            Relation(relation),
+            Subject.from_string(subject_str),
         )
 
     def to_object(self) -> Obj:
-        return Obj(NamespaceId(self.object_type), EntityId(self.object_id))
+        return Obj.from_parts(self.object_type, self.object_id)
 
     def to_relation(self) -> Relation:
         return Relation(self.relation)
 
     def to_subject(self) -> Subject:
-        return Subject(NamespaceId(self.subject_type), EntityId(self.subject_id))
+        return Subject.from_parts(self.subject_type, self.subject_id)
 
     def to_filter(self) -> TupleFilter:
-        """Convert to a TupleFilter for backing tuple lookups."""
-        return TupleFilter(
-            object_type=self.object_type,
-            object_id=self.object_id,
-            relation=self.relation,
-            subject_type=self.subject_type,
-            subject_id=self.subject_id,
+        """Convert to an exact TupleFilter for this direct check tuple."""
+        return TupleFilter.from_parts(
+            obj=self.to_object(),
+            relation=self.to_relation(),
+            subject=self.to_subject(),
         )
 
 

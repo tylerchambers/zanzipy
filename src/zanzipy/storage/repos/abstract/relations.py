@@ -10,15 +10,12 @@ filter shapes through this interface.
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Self
 
-from zanzipy.models.filter import TupleFilter
+from zanzipy.models import TupleFilter
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-    from zanzipy.models.object import Obj
-    from zanzipy.models.relation import Relation
-    from zanzipy.models.subject import Subject
-    from zanzipy.models.tuple import RelationTuple
+    from zanzipy.models import Obj, Relation, RelationTuple, Subject
 
 
 class RelationRepository(ABC):

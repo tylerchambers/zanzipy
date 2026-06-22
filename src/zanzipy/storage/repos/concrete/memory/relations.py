@@ -2,8 +2,7 @@
 
 from collections.abc import Iterable  # noqa: TC003
 
-from zanzipy.models.filter import TupleFilter  # noqa: TC001
-from zanzipy.models.tuple import RelationTuple  # noqa: TC001
+from zanzipy.models import RelationTuple, TupleFilter  # noqa: TC001
 from zanzipy.storage.repos.abstract.relations import RelationRepository
 
 

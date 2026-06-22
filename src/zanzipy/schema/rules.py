@@ -69,7 +69,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from zanzipy.models.relation import Relation as Rel
+from zanzipy.models import Relation as Rel
 from zanzipy.schema.types import RewriteRuleType
 
 # Type aliases for readability
