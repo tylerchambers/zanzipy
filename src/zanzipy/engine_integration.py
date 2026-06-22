@@ -4,7 +4,7 @@ This wraps the existing ZanzibarClient to provide methods consumed by mixins
 without changing the client's behavior or public API.
 """
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING
 
 from .models.filter import TupleFilter
@@ -84,13 +84,21 @@ class ZanzibarEngine:
 _engine_ctx: ContextVar[ZanzibarEngine] = ContextVar("zanzipy_engine")
 
 
-def configure_authorization(engine: ZanzibarEngine) -> None:
-    """Configure the global/context engine used by mixins.
+def configure_authorization(engine: ZanzibarEngine) -> Token[ZanzibarEngine]:
+    """Bind the authorization engine to the current context.
 
-    Prefer calling this at application bootstrap or within a request context.
+    The returned token can be passed to ``reset_authorization`` to restore the
+    previous binding. Existing bootstrap code may ignore the token when a single
+    process-wide engine is intended.
     """
 
-    _engine_ctx.set(engine)
+    return _engine_ctx.set(engine)
+
+
+def reset_authorization(token: Token[ZanzibarEngine]) -> None:
+    """Restore the engine binding captured by ``configure_authorization``."""
+
+    _engine_ctx.reset(token)
 
 
 def get_authorization_engine() -> ZanzibarEngine:

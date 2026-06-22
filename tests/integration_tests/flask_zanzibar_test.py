@@ -1,6 +1,7 @@
 import types
 
 from flask import Flask
+import pytest
 
 from zanzipy.client import ZanzibarClient
 from zanzipy.integration.flask import Zanzibar
@@ -128,3 +129,90 @@ class TestFlaskZanzibarExtension:
         res = client.get("/mixins/doc1/bob")
         assert res.status_code == 200
         assert res.get_json() == {"allowed": False}
+
+    def test_reusable_extension_resolves_current_app_client(self) -> None:
+        zanzibar = Zanzibar()
+        app1 = Flask("app1")
+        app1.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        app1.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        zanzibar.init_app(app1)
+
+        app2 = Flask("app2")
+        app2.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        app2.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        zanzibar.init_app(app2)
+
+        with app1.app_context():
+            current_zanzibar.write("document:doc1", "owner", "user:alice")
+            assert current_zanzibar.check("document:doc1", "can_view", "user:alice")
+
+        with app2.app_context():
+            assert not current_zanzibar.check("document:doc1", "can_view", "user:alice")
+            current_zanzibar.write("document:doc1", "owner", "user:bob")
+
+        with app1.app_context():
+            assert current_zanzibar.check("document:doc1", "can_view", "user:alice")
+            assert not current_zanzibar.check("document:doc1", "can_view", "user:bob")
+
+    def test_app_context_binds_mixins_to_current_app(self) -> None:
+        from zanzipy.integration.mixins import AuthorizableResource, AuthorizableSubject
+
+        class _Doc(AuthorizableResource):
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+            def get_resource_dict(self) -> dict:
+                return {"namespace": "document", "id": self.id}
+
+        class _User(AuthorizableSubject):
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+            def get_subject_dict(self) -> dict:
+                return {"namespace": "user", "id": self.id}
+
+        zanzibar = Zanzibar()
+        app1 = Flask("mixin-app1")
+        app1.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        app1.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        zanzibar.init_app(app1)
+
+        app2 = Flask("mixin-app2")
+        app2.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        app2.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        zanzibar.init_app(app2)
+
+        with app1.app_context():
+            _Doc("doc1").grant(_User("alice"), "owner")
+
+        with app2.app_context():
+            assert not _Doc("doc1").check(_User("alice"), "can_view")
+
+        with app1.app_context():
+            assert _Doc("doc1").check(_User("alice"), "can_view")
+
+    def test_tuple_cache_factory_type_error_is_not_retried(self) -> None:
+        app = Flask("cache-factory")
+        app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(registry=_make_registry())
+        app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+
+        calls = 0
+
+        def broken_cache(_app: Flask):
+            nonlocal calls
+            calls += 1
+            raise TypeError("cache boom")
+
+        app.config["ZANZIBAR_TUPLE_CACHE"] = broken_cache
+
+        with pytest.raises(TypeError, match="cache boom"):
+            Zanzibar().init_app(app)
+        assert calls == 1

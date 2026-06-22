@@ -127,7 +127,6 @@ class TestExpansionEngine:
         s_ex = engine.expand("document", "d", "comment_exclusion")
         assert s_ex.users == {"user:bob"}
 
-
     def test_reused_relation_operand_is_path_local(self) -> None:
         registry = SchemaRegistry()
         ns = NamespaceDef(

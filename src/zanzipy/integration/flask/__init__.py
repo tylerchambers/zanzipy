@@ -23,38 +23,69 @@ The extension expects your application to provide (directly or via config):
 You can instead pass these explicitly to `init_app`.
 """
 
+from dataclasses import dataclass
+from importlib import import_module
+from inspect import signature
 from typing import TYPE_CHECKING, Any, cast
 
 from zanzipy.client import ZanzibarClient
-from zanzipy.engine_integration import ZanzibarEngine, configure_authorization
+from zanzipy.engine_integration import (
+    ZanzibarEngine,
+    configure_authorization,
+    reset_authorization,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextvars import Token
 
     from zanzipy.storage.cache.abstract.tuples import TupleCache
 
 
-class Zanzibar:
-    """Flask extension that owns a singleton ZanzibarClient and Engine.
+_EXTENSION_KEY = "zanzibar"
+_STATE_KEY = "zanzibar_state"
+_CONTEXT_HANDLERS_KEY = "zanzibar_context_handlers"
+_ENGINE_TOKEN_ATTR = "_zanzipy_engine_token"
 
-    The engine is injected into request context at each request using the
-    existing contextvar-based integration, so mixins work inside views and
-    other request code.
+
+@dataclass(frozen=True, slots=True)
+class _ZanzibarState:
+    client: ZanzibarClient
+    engine: ZanzibarEngine
+
+
+class Zanzibar:
+    """Flask extension that exposes a per-app Zanzibar client and engine.
+
+    The extension object is reusable across app factories. App-specific state is
+    stored on ``app.extensions`` and resolved from the active Flask context, so
+    one app cannot accidentally authorize against another app's repository.
     """
 
     def __init__(self, app: Any | None = None) -> None:
-        self.client: ZanzibarClient | None = None
-        self.engine: ZanzibarEngine | None = None
+        self._app_keys: set[int] = set()
+        self._default_state: _ZanzibarState | None = None
+        self._default_token: Token[ZanzibarEngine] | None = None
         if app is not None:
             self.init_app(app)
+
+    @property
+    def client(self) -> ZanzibarClient | None:
+        state = self._optional_state()
+        return None if state is None else state.client
+
+    @property
+    def engine(self) -> ZanzibarEngine | None:
+        state = self._optional_state()
+        return None if state is None else state.engine
 
     def init_app(
         self,
         app: Any,
         *,
         schema_registry: Any | None = None,
-        relations_repository: Any | Callable[[], Any] | None = None,
-        tuple_cache: Any | Callable[[Any], Any] | None = None,
+        relations_repository: Any | Callable[..., Any] | None = None,
+        tuple_cache: Any | Callable[..., Any] | None = None,
         enable_debug: bool | None = None,
         max_check_depth: int | None = None,
     ) -> None:
@@ -65,9 +96,13 @@ class Zanzibar:
         from app.config using keys:
           - ZANZIBAR_SCHEMA: import path like "myapp.authz_schema:registry" or
             a module object with attribute `registry`
-          - ZANZIBAR_RELATIONS_REPO: object or zero-arg callable returning a repo
-          - ZANZIBAR_TUPLE_CACHE: object or callable(app) -> cache
+          - ZANZIBAR_RELATIONS_REPO: object or callable returning a repo
+          - ZANZIBAR_TUPLE_CACHE: object or callable returning a cache
+
+        Factories may accept the Flask app as their only positional argument.
         """
+
+        self._ensure_extensions(app)
 
         registry = (
             schema_registry
@@ -83,65 +118,121 @@ class Zanzibar:
             tuple_cache if tuple_cache is not None else self._resolve_tuple_cache(app)
         )
 
-        if callable(relations_repo):
-            relations_repo = relations_repo()
-        # Support cache factories accepting 0 or 1 argument (app)
-        if callable(raw_cache):
-            try:
-                produced_cache = raw_cache(app)
-            except TypeError:
-                produced_cache = raw_cache()
-        else:
-            produced_cache = raw_cache
-        cache = cast("TupleCache | None", produced_cache)
+        relations_repo = self._materialize_config_value(relations_repo, app)
+        cache = cast(
+            "TupleCache | None",
+            self._materialize_config_value(raw_cache, app),
+        )
 
         client = ZanzibarClient(
             schema=registry,
             relations_repository=relations_repo,
-            enable_debug=bool(app.config.get("ZANZIBAR_DEBUG", enable_debug or False)),
+            enable_debug=bool(
+                app.config.get(
+                    "ZANZIBAR_DEBUG",
+                    False if enable_debug is None else enable_debug,
+                )
+            ),
             max_check_depth=int(
-                app.config.get("ZANZIBAR_MAX_DEPTH", max_check_depth or 25)
+                app.config.get(
+                    "ZANZIBAR_MAX_DEPTH",
+                    25 if max_check_depth is None else max_check_depth,
+                )
             ),
             tuple_cache=cache,
         )
+        state = _ZanzibarState(client=client, engine=ZanzibarEngine(client))
 
-        engine = ZanzibarEngine(client)
+        app.extensions[_EXTENSION_KEY] = self
+        app.extensions[_STATE_KEY] = state
+        self._app_keys.add(id(app))
+        self._default_state = state if len(self._app_keys) == 1 else None
+        self._bind_default_engine()
+        self._install_context_binding(app, state)
 
-        # Store on app extensions and set up request hook to configure engine
-        if not hasattr(app, "extensions"):
-            app.extensions = {}
-        app.extensions["zanzibar"] = self
-
-        self.client = client
-        self.engine = engine
-
-        # Configure the engine immediately (for app-level operations) and also
-        # re-configure per request to ensure correct context in async or nested flows.
-        configure_authorization(engine)
-
-        # Register a before_request hook without importing Flask directly to
-        # avoid adding a hard dependency. We rely on app's provided API.
-        if hasattr(app, "before_request"):
-            app.before_request(lambda: configure_authorization(engine))
-
-    # Convenience proxies to client API
     def check(self, *args: Any, **kwargs: Any) -> bool:
-        assert self.client is not None
-        return self.client.check(*args, **kwargs)
+        return self._require_state().client.check(*args, **kwargs)
 
     def write(self, *args: Any, **kwargs: Any) -> None:
-        assert self.client is not None
-        self.client.write(*args, **kwargs)
+        self._require_state().client.write(*args, **kwargs)
 
     def delete(self, *args: Any, **kwargs: Any) -> bool:
-        assert self.client is not None
-        return self.client.delete(*args, **kwargs)
+        return self._require_state().client.delete(*args, **kwargs)
 
     def expand(self, *args: Any, **kwargs: Any) -> Any:
-        assert self.client is not None
-        return self.client.expand(*args, **kwargs)
+        return self._require_state().client.expand(*args, **kwargs)
 
-    # Resolvers (private helpers)
+    def _require_state(self) -> _ZanzibarState:
+        state = self._optional_state()
+        if state is None:
+            raise RuntimeError("Zanzibar extension is not initialized")
+        return state
+
+    def _optional_state(self) -> _ZanzibarState | None:
+        current_state = self._current_app_state()
+        if current_state is not None:
+            return current_state
+        return self._default_state
+
+    def _current_app_state(self) -> _ZanzibarState | None:
+        try:
+            from flask import current_app, has_app_context
+        except Exception:
+            return None
+
+        if not has_app_context():
+            return None
+
+        if current_app.extensions.get(_EXTENSION_KEY) is not self:
+            raise RuntimeError("Zanzibar extension not initialized on this app")
+        state = current_app.extensions.get(_STATE_KEY)
+        if state is None:
+            raise RuntimeError("Zanzibar extension state missing on this app")
+        return cast("_ZanzibarState", state)
+
+    def _bind_default_engine(self) -> None:
+        if self._default_token is not None:
+            reset_authorization(self._default_token)
+            self._default_token = None
+        if self._default_state is not None:
+            self._default_token = configure_authorization(self._default_state.engine)
+
+    def _install_context_binding(self, app: Any, state: _ZanzibarState) -> None:
+        try:
+            from flask import appcontext_pushed, appcontext_tearing_down, g
+        except Exception:
+            if hasattr(app, "before_request"):
+                app.before_request(lambda: configure_authorization(state.engine))
+            return
+
+        old_handlers = app.extensions.get(_CONTEXT_HANDLERS_KEY)
+        if old_handlers is not None:
+            pushed_handler, popped_handler = old_handlers
+            appcontext_pushed.disconnect(pushed_handler, app)
+            appcontext_tearing_down.disconnect(popped_handler, app)
+
+        def bind_engine(sender: Any, **_: Any) -> None:
+            if sender is app:
+                setattr(g, _ENGINE_TOKEN_ATTR, configure_authorization(state.engine))
+
+        def reset_engine(sender: Any, **_: Any) -> None:
+            if sender is not app:
+                return
+            token = getattr(g, _ENGINE_TOKEN_ATTR, None)
+            if token is None:
+                return
+            reset_authorization(token)
+            delattr(g, _ENGINE_TOKEN_ATTR)
+
+        appcontext_pushed.connect(bind_engine, app, weak=False)
+        appcontext_tearing_down.connect(reset_engine, app, weak=False)
+        app.extensions[_CONTEXT_HANDLERS_KEY] = (bind_engine, reset_engine)
+
+    @staticmethod
+    def _ensure_extensions(app: Any) -> None:
+        if not hasattr(app, "extensions"):
+            app.extensions = {}
+
     def _resolve_schema(self, app: Any) -> Any:
         value = app.config.get("ZANZIBAR_SCHEMA")
         if value is None:
@@ -151,11 +242,8 @@ class Zanzibar:
             )
         if isinstance(value, str):
             module_path, _, attr = value.partition(":")
-            if not attr:
-                attr = "registry"
-            mod = __import__(module_path, fromlist=[attr])
-            return getattr(mod, attr)
-        # assume module with `registry` attribute or the registry itself
+            module = import_module(module_path)
+            return getattr(module, attr or "registry")
         return getattr(value, "registry", value)
 
     def _resolve_relations_repo(self, app: Any) -> Any:
@@ -167,8 +255,21 @@ class Zanzibar:
         return value
 
     def _resolve_tuple_cache(self, app: Any) -> Any:
-        value = app.config.get("ZANZIBAR_TUPLE_CACHE")
-        if value is None:
-            # No cache by default
-            return None
-        return value
+        return app.config.get("ZANZIBAR_TUPLE_CACHE")
+
+    def _materialize_config_value(self, value: Any, app: Any) -> Any:
+        if not callable(value):
+            return value
+        return self._call_factory(value, app)
+
+    def _call_factory(self, factory: Any, app: Any) -> Any:
+        try:
+            factory_signature = signature(factory)
+        except (TypeError, ValueError):
+            return factory(app)
+
+        try:
+            factory_signature.bind(app)
+        except TypeError:
+            return factory()
+        return factory(app)

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 @dataclass(slots=True)
 class _Counters:
     """Mutable request-scoped metrics for a check traversal."""
+
     tuples_examined: int = 0
     max_depth_reached: int = 0
 
@@ -88,7 +89,6 @@ class CheckEngine:
             depth_reached=counters.max_depth_reached,
             tuples_examined=counters.tuples_examined,
         )
-
 
     def _check_recursive(
         self,
@@ -382,5 +382,3 @@ class CheckEngine:
                 return True
 
         return False
-
-

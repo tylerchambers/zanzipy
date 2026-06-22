@@ -23,6 +23,9 @@ sqlite = []
 sqlalchemy = [
     "SQLAlchemy>=2,<3",
 ]
+flask = [
+    "Flask>=2.3",
+]
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

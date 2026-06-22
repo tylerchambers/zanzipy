@@ -119,7 +119,7 @@ class AuthorizableSubject:
             subject=self.get_subject_ref(),
             permission=permission,
             resource_type=resource_type,
-            limit=limit or None,
+            limit=limit,
         )
 
     def get_relations(self, resource: AuthorizableResource) -> set[str]:
@@ -149,9 +149,8 @@ class AuthorizableGroup(AuthorizableSubject, AuthorizableResource):
 def _normalize_to_subject(value: object) -> Subject:
     """Convert a subject-like or resource-like input into a Subject value.
 
-    Supports:
-    - AuthorizableSubject (uses get_subject_ref)
-    - AuthorizableResource (uses get_resource_ref as direct subject ns:id)
+    - AuthorizableSubject or object with get_subject_ref()
+    - AuthorizableResource or object with get_resource_ref()
     - Subject (passthrough)
     - Obj (converts to direct subject ns:id)
     - str (parsed as Subject string form)
@@ -169,30 +168,54 @@ def _normalize_to_subject(value: object) -> Subject:
         return value
     if isinstance(value, _Obj):
         return _Subject(namespace=value.namespace, id=value.id)
+
+    get_subject_ref = getattr(value, "get_subject_ref", None)
+    if callable(get_subject_ref):
+        subject = get_subject_ref()
+        if isinstance(subject, _Subject):
+            return subject
+    get_resource_ref = getattr(value, "get_resource_ref", None)
+    if callable(get_resource_ref):
+        obj = get_resource_ref()
+        if isinstance(obj, _Obj):
+            return _Subject(namespace=obj.namespace, id=obj.id)
+
     if isinstance(value, str):
         return _Subject.from_string(value)
     raise TypeError(
         "subject must be AuthorizableSubject, AuthorizableResource, Subject, "
-        "Obj, or str"
+        "Obj, str, or expose get_subject_ref()/get_resource_ref()"
     )
 
 
 def _coerce_obj_dict(raw: dict) -> dict:
     """Coerce object dict fields to strings as expected by Obj.from_dict."""
 
-    ns = str(raw.get("namespace"))
-    oid = str(raw.get("id"))
-    return {"namespace": ns, "id": oid}
+    return {
+        "namespace": _required_ref_value(raw, "namespace"),
+        "id": _required_ref_value(raw, "id"),
+    }
 
 
 def _coerce_subject_dict(raw: dict) -> dict:
     """Coerce subject dict fields to strings as expected by Subject.from_dict."""
 
-    ns = str(raw.get("namespace"))
-    sid = str(raw.get("id"))
     rel = raw.get("relation")
-    rel_s = None if rel is None else str(rel)
-    return {"namespace": ns, "id": sid, "relation": rel_s}
+    return {
+        "namespace": _required_ref_value(raw, "namespace"),
+        "id": _required_ref_value(raw, "id"),
+        "relation": None if rel is None else str(rel),
+    }
+
+
+def _required_ref_value(raw: dict, key: str) -> str:
+    try:
+        value = raw[key]
+    except KeyError as exc:
+        raise ValueError(f"reference dictionary missing required key {key!r}") from exc
+    if value is None:
+        raise ValueError(f"reference dictionary key {key!r} cannot be None")
+    return str(value)
 
 
 __all__ = [

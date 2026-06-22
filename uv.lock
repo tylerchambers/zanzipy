@@ -280,6 +280,9 @@ version = "0.1.4"
 source = { editable = "." }
 
 [package.optional-dependencies]
+flask = [
+    { name = "flask" },
+]
 sqlalchemy = [
     { name = "sqlalchemy" },
 ]
@@ -295,8 +298,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2,<3" }]
-provides-extras = ["sqlite", "sqlalchemy"]
+requires-dist = [
+    { name = "flask", marker = "extra == 'flask'", specifier = ">=2.3" },
+    { name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2,<3" },
+]
+provides-extras = ["sqlite", "sqlalchemy", "flask"]
 
 [package.metadata.requires-dev]
 dev = [
