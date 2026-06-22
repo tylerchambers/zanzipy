@@ -1,13 +1,9 @@
 """Abstract cache interfaces for hot Zanzibar relation tuples.
 
-This module defines a minimal, storage-agnostic cache interface focused on
-accelerating hot-path tuple lookups used by the checker/expander engines.
-
-Design goals:
-- Keep the surface area small and semantics clear
-- Favor forward lookups by object (most common path)
-- Optionally support reverse lookups by subject
-- Leave filtering to higher layers (e.g., a repository decorator)
+The tuple cache stores broad object and subject buckets used by repository
+read-through decorators. Filtering stays in the repository layer: a cached bucket
+may contain more tuples than a specific request needs, and callers must reapply
+``TupleFilter`` before returning cached data.
 """
 
 from abc import ABC, abstractmethod
@@ -20,22 +16,17 @@ if TYPE_CHECKING:
 
 
 class TupleCache(ABC):
-    """Cache interface for relation tuples.
+    """Cache interface for relation tuple buckets.
 
-    The cache stores pre-materialized collections of ``RelationTuple`` entries
-    keyed by either an object (forward lookups) or a subject (reverse lookups).
-
-    Implementations may apply LRU/TTL strategies and are responsible for their
-    own eviction policies.
+    ``get_by_object``/``set_by_object`` use exact object identity. Subject keys
+    include ``Subject.relation`` when present; a subject with ``relation is None``
+    represents the broad reverse bucket for that namespace/id, not an
+    exact-direct-only lookup.
     """
 
     @abstractmethod
     def get_by_object(self, obj: Obj) -> Sequence[RelationTuple] | None:
-        """Return cached tuples for ``obj`` or ``None`` if not present.
-
-        Implementations should return an immutable or read-only sequence when
-        possible to discourage mutation of cached state by callers.
-        """
+        """Return cached tuples for ``obj`` or ``None`` if not present."""
 
     @abstractmethod
     def set_by_object(self, obj: Obj, tuples: Sequence[RelationTuple]) -> None:
@@ -43,7 +34,7 @@ class TupleCache(ABC):
 
     @abstractmethod
     def invalidate_object(self, obj: Obj) -> None:
-        """Invalidate any cached entry associated with ``obj``."""
+        """Invalidate the cached object bucket for ``obj``."""
 
     @abstractmethod
     def get_by_subject(self, subject: Subject) -> Sequence[RelationTuple] | None:
@@ -55,19 +46,19 @@ class TupleCache(ABC):
 
     @abstractmethod
     def invalidate_subject(self, subject: Subject) -> None:
-        """Invalidate any cached entry associated with ``subject``."""
+        """Invalidate the cached subject bucket for ``subject``."""
 
     def ping(self) -> bool:
-        """Lightweight health check for cache connectivity (optional)."""
+        """Return whether the cache is reachable."""
 
         return True
 
     def close(self) -> None:
-        """Release any resources held by the cache (optional)."""
+        """Release cache resources."""
 
         return None
 
     def info(self) -> dict[str, object]:
-        """Return diagnostic information about the cache (optional)."""
+        """Return cache diagnostics."""
 
         return {}

@@ -1,84 +1,148 @@
-"""Abstract repository for Zanzibar relation tuples.
+"""Storage contract for Zanzibar relation tuples.
 
-Defines an abstract interface specialized for storing and querying
-``RelationTuple`` entries, building on the generic ``BaseRepository``.
+The storage layer has one canonical key and one canonical filter:
+``RelationTuple`` is the structural key, and ``TupleFilter`` describes every
+forward or reverse lookup. Concrete repositories can index those fields however
+they want, but they should not expose backend-specific key objects or alternate
+filter shapes through this interface.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Self
 
-from zanzipy.models.filter import TupleFilter as _TupleFilter
-
-from .base import BaseRepository
+from zanzipy.models.filter import TupleFilter
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
 
     from zanzipy.models.object import Obj
-    from zanzipy.models.relation import Relation as Rel
+    from zanzipy.models.relation import Relation
     from zanzipy.models.subject import Subject
+    from zanzipy.models.tuple import RelationTuple
 
 
-class RelationRepository[TRelationTuple, TFilter](
-    BaseRepository[TRelationTuple, TRelationTuple, TFilter], ABC
-):
-    """Abstract storage interface for Zanzibar relation tuples.
+class RelationRepository(ABC):
+    """Abstract repository for durable ``RelationTuple`` storage.
 
-    Type parameters:
-    - ``TRelationTuple``: the relation tuple entity type
-    - ``TFilter``: filter type for querying (e.g., ``TupleFilter``)
-
-    Key model: the tuple itself is the key (identity is structural).
+    Implementations must treat writes as idempotent and use the tuple's
+    canonical string form as structural identity. ``read`` and ``read_reverse``
+    both honor every field supplied by ``TupleFilter``; the reverse method exists
+    so backends can use subject-oriented indexes for graph traversals.
     """
 
-    def key_of(self, entity: TRelationTuple) -> TRelationTuple:
-        """Use the tuple entity itself as its key (structural identity)."""
+    def key_of(self, entity: RelationTuple) -> RelationTuple:
+        """Return the public repository key for ``entity``."""
 
         return entity
 
-    def write(self, relation_tuple: TRelationTuple) -> None:
-        """Store a relation tuple (idempotent)."""
+    @abstractmethod
+    def upsert(self, entity: RelationTuple) -> None:
+        """Insert ``entity`` if it is absent; otherwise leave storage unchanged."""
+
+    def upsert_many(self, entities: Iterable[RelationTuple]) -> None:
+        """Insert each tuple from ``entities`` idempotently."""
+
+        for entity in entities:
+            self.upsert(entity)
+
+    def write(self, relation_tuple: RelationTuple) -> None:
+        """Store ``relation_tuple`` idempotently."""
 
         self.upsert(relation_tuple)
 
-    def write_many(self, tuples: Iterable[TRelationTuple]) -> None:
-        """Bulk write operation (override for performance)."""
+    def write_many(self, tuples: Iterable[RelationTuple]) -> None:
+        """Store each tuple from ``tuples`` idempotently."""
 
         self.upsert_many(tuples)
 
-    def delete(self, relation_tuple: TRelationTuple) -> bool:
-        """Remove a relation tuple (idempotent). Returns True if deleted."""
+    @abstractmethod
+    def delete_by_key(self, key: RelationTuple) -> bool:
+        """Delete ``key`` and return whether a stored tuple was removed."""
 
-        return super().delete(relation_tuple)
+    def delete(self, relation_tuple: RelationTuple) -> bool:
+        """Delete ``relation_tuple`` and return whether it existed."""
 
-    def delete_many(self, tuples: Iterable[TRelationTuple]) -> int:
-        """Bulk delete operation. Returns the number of deleted tuples."""
+        return self.delete_by_key(self.key_of(relation_tuple))
 
-        return super().delete_many(tuples)
+    def delete_many_by_key(self, keys: Iterable[RelationTuple]) -> int:
+        """Delete each key and return the number of stored tuples removed."""
+
+        deleted = 0
+        for key in keys:
+            deleted += int(self.delete_by_key(key))
+        return deleted
+
+    def delete_many(self, tuples: Iterable[RelationTuple]) -> int:
+        """Delete each tuple and return the number of stored tuples removed."""
+
+        return self.delete_many_by_key(self.key_of(tuple_) for tuple_ in tuples)
+
+    def delete_where(self, filter: TupleFilter) -> int:
+        """Delete all tuples matching ``filter`` and return the removed count."""
+
+        matches = list(self.read(filter))
+        return self.delete_many_by_key(matches)
 
     @abstractmethod
-    def read(self, filter: TFilter) -> Iterable[TRelationTuple]:
-        """Forward lookup by object ("Who can access this resource?")."""
+    def get(self, key: RelationTuple) -> RelationTuple | None:
+        """Return ``key`` if it is currently stored, otherwise ``None``."""
+
+    def exists(self, key: RelationTuple) -> bool:
+        """Return whether ``key`` is currently stored."""
+
+        return self.get(key) is not None
 
     @abstractmethod
-    def read_reverse(self, filter: TFilter) -> Iterable[TRelationTuple]:
-        """Reverse lookup by subject ("What can this subject access?")."""
+    def read(self, filter: TupleFilter) -> Iterable[RelationTuple]:
+        """Return tuples matching ``filter`` using the backend's forward path."""
 
-    # Satisfy BaseRepository.find via forward reads by default.
-    def find(self, filter: TFilter) -> Iterable[TRelationTuple]:
+    @abstractmethod
+    def read_reverse(self, filter: TupleFilter) -> Iterable[RelationTuple]:
+        """Return tuples matching ``filter`` using the backend's reverse path."""
+
+    def find(self, filter: TupleFilter) -> Iterable[RelationTuple]:
+        """Alias for ``read`` for callers that prefer repository terminology."""
+
         return self.read(filter)
 
-    def by_object(self, obj: Obj) -> Iterable[TRelationTuple]:
-        """Iterate tuples for a specific object (type and id)."""
+    def iter(self, filter: TupleFilter) -> Iterator[RelationTuple]:
+        """Yield tuples matching ``filter``."""
 
-        return self.read(_TupleFilter.from_object(obj))
+        yield from self.read(filter)
 
-    def by_subject(self, subject: Subject) -> Iterable[TRelationTuple]:
-        """Iterate tuples for a specific subject (reverse lookup)."""
+    def by_object(self, obj: Obj) -> Iterable[RelationTuple]:
+        """Return tuples for ``obj`` regardless of relation or subject."""
 
-        return self.read_reverse(_TupleFilter.from_subject(subject))
+        return self.read(TupleFilter.from_object(obj))
 
-    def by_relation(self, relation: Rel) -> Iterable[TRelationTuple]:
-        """Iterate tuples that have a specific relation name."""
+    def by_subject(self, subject: Subject) -> Iterable[RelationTuple]:
+        """Return tuples for ``subject`` using the reverse lookup path."""
 
-        return self.read(_TupleFilter.from_relation(relation))
+        return self.read_reverse(TupleFilter.from_subject(subject))
+
+    def by_relation(self, relation: Relation) -> Iterable[RelationTuple]:
+        """Return tuples with relation name ``relation``."""
+
+        return self.read(TupleFilter.from_relation(relation))
+
+    def ping(self) -> bool:
+        """Return whether the repository is reachable."""
+
+        return True
+
+    def info(self) -> dict[str, Any]:
+        """Return backend diagnostics."""
+
+        return {}
+
+    def close(self) -> None:
+        """Release backend resources."""
+
+        return None
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+        return None

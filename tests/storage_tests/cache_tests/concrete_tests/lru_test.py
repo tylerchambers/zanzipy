@@ -1,3 +1,5 @@
+import pytest
+
 from zanzipy.models.tuple import RelationTuple
 from zanzipy.storage.cache.concrete.lru import LruTupleCache
 
@@ -22,25 +24,18 @@ class TestLruTupleCache:
         t1 = _rt("doc", "1", "viewer", "user", "alice")
         obj = t1.object
 
-        # Miss before set
         assert cache.get_by_object(obj) is None
-        info = cache.info()
-        assert info["misses"] == 1
+        assert cache.info()["misses"] == 1
 
-        # Set and hit
         cache.set_by_object(obj, [t1])
         got = cache.get_by_object(obj)
-        assert got is not None
-        assert list(got) == [t1]
+        assert got == (t1,)
 
-        # Returned list is a copy
-        got_mut = list(got)
-        got_mut.append(_rt("doc", "1", "viewer", "user", "bob"))
-        got2 = cache.get_by_object(obj)
-        assert got2 is not None
-        assert list(got2) == [t1]
+        with pytest.raises(AttributeError):
+            got.append(_rt("doc", "1", "viewer", "user", "bob"))  # type: ignore[attr-defined]
 
-        # Invalidate
+        assert cache.get_by_object(obj) == (t1,)
+
         cache.invalidate_object(obj)
         assert cache.get_by_object(obj) is None
 
@@ -49,38 +44,25 @@ class TestLruTupleCache:
         t_direct = _rt("doc", "1", "editor", "user", "alice")
         t_anchor = _rt("doc", "1", "editor", "group", "eng", "member")
 
-        # Direct subject
         cache.set_by_subject(t_direct.subject, [t_direct])
-        s1 = cache.get_by_subject(t_direct.subject)
-        assert s1 is not None
-        assert list(s1) == [t_direct]
+        assert cache.get_by_subject(t_direct.subject) == (t_direct,)
 
-        # Subject-set anchor is a distinct key
         cache.set_by_subject(t_anchor.subject, [t_anchor])
-        s2 = cache.get_by_subject(t_anchor.subject)
-        assert s2 is not None
-        assert list(s2) == [t_anchor]
+        assert cache.get_by_subject(t_anchor.subject) == (t_anchor,)
 
-        # Invalidate only the direct subject
         cache.invalidate_subject(t_direct.subject)
         assert cache.get_by_subject(t_direct.subject) is None
-        s3 = cache.get_by_subject(t_anchor.subject)
-        assert s3 is not None
-        assert list(s3) == [t_anchor]
+        assert cache.get_by_subject(t_anchor.subject) == (t_anchor,)
 
     def test_ttl_expiry_zero_expires_immediately(self) -> None:
         cache = LruTupleCache(max_entries=10, ttl_seconds=0)
         t1 = _rt("doc", "1", "viewer", "user", "alice")
         cache.set_by_object(t1.object, [t1])
-        # Immediate get should see expired entry
-        res = cache.get_by_object(t1.object)
-        assert res is None
+
+        assert cache.get_by_object(t1.object) is None
 
     def test_ttl_expiry_with_time_advance(self, monkeypatch) -> None:
-        # Use TTL of 5 and advance time beyond expiry
-        cache = LruTupleCache(max_entries=10, ttl_seconds=5)
-        # Patch the module's time.monotonic used by cache
-        import zanzipy.storage.cache.concrete.lru as lru_module
+        import zanzipy.storage.cache.concrete._lru as lru_module
 
         now = 1000.0
 
@@ -88,78 +70,63 @@ class TestLruTupleCache:
             return now
 
         monkeypatch.setattr(lru_module.time, "monotonic", fake_monotonic)
-
+        cache = LruTupleCache(max_entries=10, ttl_seconds=5)
         t1 = _rt("doc", "1", "viewer", "user", "alice")
-        cache.set_by_object(t1.object, [t1])
-        got = cache.get_by_object(t1.object)
-        assert got is not None
-        assert list(got) == [t1]
 
-        # Advance time past expiry
+        cache.set_by_object(t1.object, [t1])
+        assert cache.get_by_object(t1.object) == (t1,)
+
         now = 1006.0
         assert cache.get_by_object(t1.object) is None
 
-    def test_lru_eviction_prefers_larger_map_and_lru_order(self) -> None:
-        # max_entries=3 -> evict one when inserting 4th
+    def test_lru_eviction_is_global_across_object_and_subject_entries(self) -> None:
         cache = LruTupleCache(max_entries=3, ttl_seconds=None)
         t_a = _rt("doc", "A", "viewer", "user", "a")
         t_b = _rt("doc", "B", "viewer", "user", "b")
+        t_subject = _rt("doc", "S", "viewer", "user", "s")
         t_c = _rt("doc", "C", "viewer", "user", "c")
-        t_subj = _rt("doc", "S", "viewer", "user", "s")
 
-        # Fill: two object keys, one subject key
-        cache.set_by_object(t_a.object, [t_a])  # LRU oldest in obj_map
-        cache.set_by_object(t_b.object, [t_b])  # newer in obj_map
-        cache.set_by_subject(t_subj.subject, [t_subj])  # subj_map has 1
+        cache.set_by_object(t_a.object, [t_a])
+        cache.set_by_subject(t_subject.subject, [t_subject])
+        cache.set_by_object(t_b.object, [t_b])
 
-        # Touch oldest (t_a) to make t_b the LRU in obj_map
-        g1 = cache.get_by_object(t_a.object)
-        assert g1 is not None
-        assert list(g1) == [t_a]
-
-        # Insert a new object entry; obj_map is larger, so evict LRU from obj_map
+        assert cache.get_by_object(t_a.object) == (t_a,)
         cache.set_by_object(t_c.object, [t_c])
 
-        # t_b should be evicted; t_a (touched) and t_c should remain
-        assert cache.get_by_object(t_b.object) is None
-        g2 = cache.get_by_object(t_a.object)
-        assert g2 is not None
-        assert list(g2) == [t_a]
-        g3 = cache.get_by_object(t_c.object)
-        assert g3 is not None
-        assert list(g3) == [t_c]
-        # Subject entry remains
-        s = cache.get_by_subject(t_subj.subject)
-        assert s is not None
-        assert list(s) == [t_subj]
+        assert cache.get_by_subject(t_subject.subject) is None
+        assert cache.get_by_object(t_a.object) == (t_a,)
+        assert cache.get_by_object(t_b.object) == (t_b,)
+        assert cache.get_by_object(t_c.object) == (t_c,)
 
         info = cache.info()
-        assert info["size_objects"] == 2
-        assert info["size_subjects"] == 1
+        assert info["size"] == 3
+        assert info["size_objects"] == 3
+        assert info["size_subjects"] == 0
 
     def test_counters_and_lifecycle(self) -> None:
         cache = LruTupleCache(max_entries=5, ttl_seconds=None)
         t1 = _rt("doc", "1", "viewer", "user", "alice")
 
-        # Miss then hit
         assert cache.get_by_object(t1.object) is None
         cache.set_by_object(t1.object, [t1])
-        got = cache.get_by_object(t1.object)
-        assert got is not None
-        assert list(got) == [t1]
+        assert cache.get_by_object(t1.object) == (t1,)
 
         info = cache.info()
-        hits = info["hits"]
-        misses = info["misses"]
-        assert isinstance(hits, int)
-        assert hits >= 1
-        assert isinstance(misses, int)
-        assert misses >= 1
+        assert isinstance(info["hits"], int)
+        assert info["hits"] >= 1
+        assert isinstance(info["misses"], int)
+        assert info["misses"] >= 1
 
-        # ping/close
-        ok = cache.ping()
-        assert ok is True
+        assert cache.ping() is True
         cache.close()
         info2 = cache.info()
+        assert info2["size"] == 0
         assert info2["size_objects"] == 0
         assert info2["size_subjects"] == 0
+
+    def test_invalid_capacity_or_ttl_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_entries"):
+            LruTupleCache(max_entries=-1)
+
+        with pytest.raises(ValueError, match="ttl_seconds"):
+            LruTupleCache(ttl_seconds=-1)
