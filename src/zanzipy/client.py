@@ -8,13 +8,13 @@ from .models.namespace import NamespaceId
 from .models.object import Obj
 from .models.subject import Subject
 from .models.tuple import RelationTuple
-from .schema.subjects import SubjectReference
-from .schema.types import SchemaDefinitionType
+from .schema.relations import RelationDef
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Sequence
 
     from .schema.registry import SchemaRegistry
+    from .schema.subjects import SubjectReference
     from .storage.cache.abstract.tuples import TupleCache
     from .storage.repos.abstract.relations import RelationRepository
 
@@ -218,22 +218,19 @@ class ZanzibarClient:
         object_ns = str(rt.object.namespace)
         relation_name = str(rt.relation)
 
-        rel_def = self.schema.get_relation_definition(object_ns, relation_name)
-        def_type = SchemaDefinitionType(rel_def.get("type"))
-        if def_type is not SchemaDefinitionType.RELATION:
+        definition = self.schema.get_definition(object_ns, relation_name)
+        if not isinstance(definition, RelationDef):
             raise ValueError(
                 f"Cannot write to permission '{object_ns}:{relation_name}'"
             )
 
-        allowed_subject_dicts: Iterable[dict] = rel_def.get("allowed_subjects", [])
-        allowed_subjects = tuple(
-            SubjectReference.from_dict(s) for s in allowed_subject_dicts
-        )
+        allowed_subjects = definition.allowed_subjects
 
         subj_ns = str(rt.subject.namespace)
+        subj_id = str(rt.subject.id)
         subj_rel = None if rt.subject.relation is None else str(rt.subject.relation)
 
-        if not self._subject_is_allowed(subj_ns, subj_rel, allowed_subjects):
+        if not self._subject_is_allowed(subj_ns, subj_id, subj_rel, allowed_subjects):
             rendered = []
             for s in allowed_subjects:
                 rel_part = f"#{s.relation.value}" if s.relation else ""
@@ -248,20 +245,15 @@ class ZanzibarClient:
     @staticmethod
     def _subject_is_allowed(
         subj_namespace: str,
+        subj_id: str,
         subj_relation: str | None,
         allowed: Sequence[SubjectReference],
     ) -> bool:
         for ref in allowed:
-            if ref.relation is None:
-                # Allows direct subjects of the namespace (wildcard or not)
-                if subj_relation is None and ref.namespace.value == subj_namespace:
-                    return True
-            else:
-                # Allows subject sets with a specific relation
-                if (
-                    subj_relation is not None
-                    and ref.namespace.value == subj_namespace
-                    and ref.relation.value == subj_relation
-                ):
-                    return True
+            if ref.allows(
+                namespace=subj_namespace,
+                entity_id=subj_id,
+                relation=subj_relation,
+            ):
+                return True
         return False

@@ -1,4 +1,5 @@
-from typing import Self
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Self
 
 from zanzipy.models.namespace import NamespaceId as Ns
 
@@ -14,6 +15,9 @@ from .rules import (
     TupleToUsersetRule,
     UnionRule,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class NamespaceDef:
@@ -51,13 +55,8 @@ class NamespaceDef:
         rel_tuple: tuple[RelationDef, ...] = tuple(relations or ())
         perm_tuple: tuple[PermissionDef, ...] = tuple(permissions or ())
 
-        # Build dictionaries with last-one-wins for duplicate names
-        rel_dict: dict[str, RelationDef] = {}
-        for rel in rel_tuple:
-            rel_dict[rel.name] = rel
-        perm_dict: dict[str, PermissionDef] = {}
-        for perm in perm_tuple:
-            perm_dict[perm.name] = perm
+        rel_dict = self._index_relations(rel_tuple)
+        perm_dict = self._index_permissions(perm_tuple)
 
         relation_names = set(rel_dict.keys())
         permission_names = set(perm_dict.keys())
@@ -72,32 +71,34 @@ class NamespaceDef:
         all_names = relation_names | permission_names
         for rel in rel_dict.values():
             if rel.rewrite is not None:
-                self._validate_relation_rewrite(
+                self._validate_rewrite(
                     rewrite=rel.rewrite,
                     relation_names=relation_names,
                     all_names=all_names,
                     owner=f"relation '{rel.name}'",
+                    allow_direct=True,
                 )
 
         for perm in perm_dict.values():
             if perm.rewrite is None:
                 raise ValueError(f"Permission '{perm.name}' must define a rewrite")
-            self._validate_permission_rewrite(
+            self._validate_rewrite(
                 rewrite=perm.rewrite,
                 relation_names=relation_names,
                 all_names=all_names,
                 owner=f"permission '{perm.name}'",
+                allow_direct=False,
             )
 
-        self._relations = rel_dict
-        self._permissions = perm_dict
+        self._relations = MappingProxyType(rel_dict)
+        self._permissions = MappingProxyType(perm_dict)
 
     @property
-    def relations(self) -> dict[str, RelationDef]:
+    def relations(self) -> Mapping[str, RelationDef]:
         return self._relations
 
     @property
-    def permissions(self) -> dict[str, PermissionDef]:
+    def permissions(self) -> Mapping[str, PermissionDef]:
         return self._permissions
 
     def to_dict(self) -> dict:
@@ -121,10 +122,12 @@ class NamespaceDef:
             )
 
         relation_defs = tuple(
-            RelationDef.from_dict(rel_dict) for rel_dict in relations_raw.values()
+            cls._relation_from_mapping(key, rel_dict)
+            for key, rel_dict in relations_raw.items()
         )
         permission_defs = tuple(
-            PermissionDef.from_dict(perm_dict) for perm_dict in permissions_raw.values()
+            cls._permission_from_mapping(key, perm_dict)
+            for key, perm_dict in permissions_raw.items()
         )
 
         return cls(
@@ -135,123 +138,104 @@ class NamespaceDef:
         )
 
     @staticmethod
-    def _validate_relation_rewrite(
-        *,
-        rewrite: RewriteRule,
-        relation_names: set[str],
-        all_names: set[str],
-        owner: str,
-    ) -> None:
-        """Validate a rewrite attached to a relation.
-
-        Constraints:
-        - `ThisRule` and `DirectRule` are allowed in relations
-        - `ComputedUsersetRule` must reference an existing relation/permission
-        - `TupleToUsersetRule` must reference existing relations by name
-        """
-
-        if isinstance(rewrite, (UnionRule, IntersectionRule)):
-            for child in rewrite.children:
-                NamespaceDef._validate_relation_rewrite(
-                    rewrite=child,
-                    relation_names=relation_names,
-                    all_names=all_names,
-                    owner=owner,
-                )
-            return
-
-        if isinstance(rewrite, ExclusionRule):
-            NamespaceDef._validate_relation_rewrite(
-                rewrite=rewrite.base,
-                relation_names=relation_names,
-                all_names=all_names,
-                owner=owner,
-            )
-            NamespaceDef._validate_relation_rewrite(
-                rewrite=rewrite.subtract,
-                relation_names=relation_names,
-                all_names=all_names,
-                owner=owner,
-            )
-            return
-
-        if isinstance(rewrite, ThisRule):
-            return
-
-        if isinstance(rewrite, DirectRule):
-            return
-
-        if isinstance(rewrite, ComputedUsersetRule):
-            if rewrite.relation not in all_names:
-                raise ValueError(
-                    f"{owner}: computed userset references unknown name "
-                    f"'{rewrite.relation}'"
-                )
-            return
-
-        if isinstance(rewrite, TupleToUsersetRule):
-            if rewrite.tuple_relation not in relation_names:
-                raise ValueError(
-                    f"{owner}: tuple_to_userset.tuple_relation "
-                    f"'{rewrite.tuple_relation}' is not a known relation"
-                )
-            if rewrite.computed_relation not in relation_names:
-                raise ValueError(
-                    f"{owner}: tuple_to_userset.computed_relation "
-                    f"'{rewrite.computed_relation}' is not a known relation"
-                )
-            return
-
-        # If we reach here the node type is unknown at runtime
-        raise ValueError(
-            f"{owner}: unknown rewrite node type: {type(rewrite).__name__}"
-        )
+    def _index_relations(
+        relations: tuple[RelationDef, ...],
+    ) -> dict[str, RelationDef]:
+        indexed: dict[str, RelationDef] = {}
+        duplicates: set[str] = set()
+        for relation in relations:
+            if relation.name in indexed:
+                duplicates.add(relation.name)
+            indexed[relation.name] = relation
+        if duplicates:
+            raise ValueError(f"Duplicate relation names: {sorted(duplicates)}")
+        return indexed
 
     @staticmethod
-    def _validate_permission_rewrite(
+    def _index_permissions(
+        permissions: tuple[PermissionDef, ...],
+    ) -> dict[str, PermissionDef]:
+        indexed: dict[str, PermissionDef] = {}
+        duplicates: set[str] = set()
+        for permission in permissions:
+            if permission.name in indexed:
+                duplicates.add(permission.name)
+            indexed[permission.name] = permission
+        if duplicates:
+            raise ValueError(f"Duplicate permission names: {sorted(duplicates)}")
+        return indexed
+
+    @staticmethod
+    def _relation_from_mapping(key: str, data: dict) -> RelationDef:
+        relation = RelationDef.from_dict(data)
+        if key != relation.name:
+            raise ValueError(
+                f"Relation mapping key '{key}' does not match definition name "
+                f"'{relation.name}'"
+            )
+        return relation
+
+    @staticmethod
+    def _permission_from_mapping(key: str, data: dict) -> PermissionDef:
+        permission = PermissionDef.from_dict(data)
+        if key != permission.name:
+            raise ValueError(
+                f"Permission mapping key '{key}' does not match definition name "
+                f"'{permission.name}'"
+            )
+        return permission
+
+    @staticmethod
+    def _validate_rewrite(
         *,
         rewrite: RewriteRule,
         relation_names: set[str],
         all_names: set[str],
         owner: str,
+        allow_direct: bool,
     ) -> None:
-        """Validate a rewrite attached to a permission.
+        """Validate a rewrite tree against this namespace's local names.
 
-        Constraints:
-        - `ThisRule` and `DirectRule` are NOT valid in permissions
-        - `ComputedUsersetRule` must reference an existing relation/permission
-        - `TupleToUsersetRule` must reference existing relations by name
+        `TupleToUsersetRule.computed_relation` is intentionally not checked
+        here: it is evaluated on the object reached through `tuple_relation`,
+        so only `SchemaRegistry` has enough cross-namespace context to validate
+        its target.
         """
 
         if isinstance(rewrite, (UnionRule, IntersectionRule)):
             for child in rewrite.children:
-                NamespaceDef._validate_permission_rewrite(
+                NamespaceDef._validate_rewrite(
                     rewrite=child,
                     relation_names=relation_names,
                     all_names=all_names,
                     owner=owner,
+                    allow_direct=allow_direct,
                 )
             return
 
         if isinstance(rewrite, ExclusionRule):
-            NamespaceDef._validate_permission_rewrite(
+            NamespaceDef._validate_rewrite(
                 rewrite=rewrite.base,
                 relation_names=relation_names,
                 all_names=all_names,
                 owner=owner,
+                allow_direct=allow_direct,
             )
-            NamespaceDef._validate_permission_rewrite(
+            NamespaceDef._validate_rewrite(
                 rewrite=rewrite.subtract,
                 relation_names=relation_names,
                 all_names=all_names,
                 owner=owner,
+                allow_direct=allow_direct,
             )
             return
 
         if isinstance(rewrite, (ThisRule, DirectRule)):
-            raise ValueError(
-                f"{owner}: 'this' and 'direct' are not valid in permissions"
-            )
+            if not allow_direct:
+                raise ValueError(
+                    f"{owner}: 'this' and 'direct' are not valid in permissions"
+                )
+            return
 
         if isinstance(rewrite, ComputedUsersetRule):
             if rewrite.relation not in all_names:
@@ -267,14 +251,8 @@ class NamespaceDef:
                     f"{owner}: tuple_to_userset.tuple_relation "
                     f"'{rewrite.tuple_relation}' is not a known relation"
                 )
-            if rewrite.computed_relation not in relation_names:
-                raise ValueError(
-                    f"{owner}: tuple_to_userset.computed_relation "
-                    f"'{rewrite.computed_relation}' is not a known relation"
-                )
             return
 
-        # If we reach here the node type is unknown at runtime
         raise ValueError(
             f"{owner}: unknown rewrite node type: {type(rewrite).__name__}"
         )

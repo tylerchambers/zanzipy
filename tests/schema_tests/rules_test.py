@@ -1,5 +1,6 @@
 import pytest
 
+from zanzipy.models.errors import IdentifierValidationError
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
@@ -21,7 +22,6 @@ class TestDirectRule:
 @pytest.mark.parametrize(
     ("children", "expected_dict", "expected_spicedb"),
     [
-        ((), {"type": "union", "children": []}, ""),
         (
             (ComputedUsersetRule("viewer"),),
             {
@@ -48,11 +48,16 @@ class TestUnionRule:
         rule = UnionRule(children=children)
         assert rule.to_dict() == expected_dict
 
+    def test_empty_union_rejected(
+        self, children, expected_dict, expected_spicedb
+    ) -> None:
+        with pytest.raises(ValueError, match="union requires at least one child"):
+            UnionRule(children=())
+
 
 @pytest.mark.parametrize(
     ("children", "expected_dict", "expected_spicedb"),
     [
-        ((), {"type": "intersection", "children": []}, ""),
         (
             (ComputedUsersetRule("viewer"), ComputedUsersetRule("member")),
             {
@@ -71,20 +76,18 @@ class TestIntersectionRule:
         rule = IntersectionRule(children=children)
         assert rule.to_dict() == expected_dict
 
+    def test_empty_intersection_rejected(
+        self, children, expected_dict, expected_spicedb
+    ) -> None:
+        with pytest.raises(
+            ValueError, match="intersection requires at least one child"
+        ):
+            IntersectionRule(children=())
+
 
 @pytest.mark.parametrize(
     ("base", "subtract", "expected_dict", "expected_spicedb"),
     [
-        (
-            ComputedUsersetRule("member"),
-            ComputedUsersetRule(""),
-            {
-                "type": "exclusion",
-                "base": {"type": "computed_userset", "relation": "member"},
-                "subtract": {"type": "computed_userset", "relation": ""},
-            },
-            "member",
-        ),
         (
             ComputedUsersetRule("member"),
             ComputedUsersetRule("banned"),
@@ -95,22 +98,20 @@ class TestIntersectionRule:
             },
             "member - banned",
         ),
-        (
-            ComputedUsersetRule(""),
-            ComputedUsersetRule("banned"),
-            {
-                "type": "exclusion",
-                "base": {"type": "computed_userset", "relation": ""},
-                "subtract": {"type": "computed_userset", "relation": "banned"},
-            },
-            "",
-        ),
     ],
 )
 class TestExclusionRule:
     def test_exclusion(self, base, subtract, expected_dict, expected_spicedb) -> None:
         rule = ExclusionRule(base=base, subtract=subtract)
         assert rule.to_dict() == expected_dict
+
+    def test_rejects_invalid_relation_names(
+        self, base, subtract, expected_dict, expected_spicedb
+    ) -> None:
+        with pytest.raises(IdentifierValidationError, match="identifier"):
+            ComputedUsersetRule("")
+        with pytest.raises(IdentifierValidationError, match="identifier"):
+            TupleToUsersetRule(tuple_relation="parent", computed_relation="")
 
 
 class TestRewriteRuleFromDict:
@@ -142,11 +143,9 @@ class TestRewriteRuleFromDict:
         assert isinstance(rule, TupleToUsersetRule)
         assert rule.to_dict() == d
 
-    def test_from_dict_union(self) -> None:
-        d = {"type": "union", "children": []}
-        rule = RewriteRule.from_dict(d)
-        assert isinstance(rule, UnionRule)
-        assert rule.to_dict() == d
+    def test_from_dict_empty_union_raises(self) -> None:
+        with pytest.raises(ValueError, match="union requires at least one child"):
+            RewriteRule.from_dict({"type": "union", "children": []})
 
     def test_from_dict_union_with_children(self) -> None:
         d = {
@@ -160,11 +159,11 @@ class TestRewriteRuleFromDict:
         assert isinstance(rule, UnionRule)
         assert rule.to_dict() == d
 
-    def test_from_dict_intersection(self) -> None:
-        d = {"type": "intersection", "children": []}
-        rule = RewriteRule.from_dict(d)
-        assert isinstance(rule, IntersectionRule)
-        assert rule.to_dict() == d
+    def test_from_dict_empty_intersection_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match="intersection requires at least one child"
+        ):
+            RewriteRule.from_dict({"type": "intersection", "children": []})
 
     def test_from_dict_intersection_with_children(self) -> None:
         d = {

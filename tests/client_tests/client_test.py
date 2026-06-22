@@ -48,6 +48,15 @@ class TestZanzibarClient:
                 PermissionDef(name="can_view", rewrite=ComputedUsersetRule("owner")),
             ),
         )
+        group = NamespaceDef(
+            name="group",
+            relations=(
+                RelationDef.with_subjects(
+                    "member", (SubjectReference.from_dict({"namespace": "user"}),)
+                ),
+            ),
+            permissions=(),
+        )
         folder = NamespaceDef(
             name="folder",
             relations=(
@@ -57,7 +66,7 @@ class TestZanzibarClient:
             ),
             permissions=(),
         )
-        registry.register_many([ns, folder])
+        registry.register_many([ns, folder, group])
         return registry
 
     def test_write_and_check_happy_path(self) -> None:
@@ -110,6 +119,34 @@ class TestZanzibarClient:
         # Bad tuple formatting via components (e.g., missing ':')
         with pytest.raises(InvalidTupleFormatError):
             client.write("document", "owner", "user:alice")
+
+    def test_write_wildcard_subjects_preserve_schema_semantics(self) -> None:
+        registry = SchemaRegistry()
+        ns = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "viewer",
+                    (SubjectReference(namespace="user", wildcard=True),),
+                ),
+                RelationDef.with_subjects(
+                    "owner",
+                    (SubjectReference(namespace="user"),),
+                ),
+            ),
+        )
+        registry.register(ns)
+        repo = InMemoryRelationRepository()
+        client = ZanzibarClient(relations_repository=repo, schema=registry)
+
+        with pytest.raises(ValueError, match="Subject not allowed by schema"):
+            client.write("document:d1", "viewer", "user:alice")
+        with pytest.raises(ValueError, match="Subject not allowed by schema"):
+            client.write("document:d1", "owner", "user:*")
+
+        client.write("document:d1", "viewer", "user:*")
+        assert client.check("document:d1", "viewer", "user:alice") is True
+        assert client.check("document:d1", "viewer", "group:eng") is False
 
     def test_write_many_all_or_nothing(self) -> None:
         registry = self._base_registry()

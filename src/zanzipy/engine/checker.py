@@ -311,14 +311,15 @@ class CheckEngine:
 
             counters.tuples_examined += 1
 
-            # Direct subject: exact match
-            if t.subject.relation is None and (
-                str(t.subject.namespace) == subject_type
-                and str(t.subject.id) == subject_id
-            ):
-                if debug_trace is not None:
-                    debug_trace.append(f"{'  ' * (depth + 1)}matched direct tuple: {t}")
-                return True
+            # Direct subject: exact match or namespace wildcard
+            if t.subject.relation is None and str(t.subject.namespace) == subject_type:
+                tuple_subject_id = str(t.subject.id)
+                if tuple_subject_id == subject_id or tuple_subject_id == "*":
+                    if debug_trace is not None:
+                        debug_trace.append(
+                            f"{'  ' * (depth + 1)}matched direct tuple: {t}"
+                        )
+                    return True
 
             # Subject set: recurse on the subject's relation
             if t.subject.relation is not None and self._check_recursive(

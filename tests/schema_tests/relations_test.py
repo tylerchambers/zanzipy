@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 import pytest
 
 from zanzipy.models.errors import IdentifierValidationError
@@ -108,6 +110,21 @@ class TestRelationDef:
         assert rel.allowed_subjects == (
             SubjectReference(namespace=NamespaceId("user")),
         )
+
+    def test_with_subjects_normalizes_iterables_to_tuple(self) -> None:
+        subjects = [SubjectReference(namespace=NamespaceId("user"))]
+        rel = RelationDef.with_subjects(name="viewer", subjects=subjects)
+
+        subjects.clear()
+
+        assert rel.allowed_subjects == (
+            SubjectReference(namespace=NamespaceId("user")),
+        )
+
+    def test_rejects_non_subjectreference_values(self) -> None:
+        subjects = cast("Any", ("user",))
+        with pytest.raises(TypeError, match="allowed_subjects"):
+            RelationDef(name="viewer", allowed_subjects=subjects)
 
     def test_requires_at_least_one_subject(self) -> None:
         with pytest.raises(

@@ -4,8 +4,11 @@ from .registry import SchemaRegistry
 from .relations import RelationDef
 from .rules import (
     ComputedUsersetRule,
+    DirectRule,
     ExclusionRule,
+    IntersectionRule,
     RewriteRule,
+    ThisRule,
     TupleToUsersetRule,
     UnionRule,
 )
@@ -14,7 +17,9 @@ from .types import RewriteRuleType, SchemaDefinitionType
 
 __all__ = [
     "ComputedUsersetRule",
+    "DirectRule",
     "ExclusionRule",
+    "IntersectionRule",
     "NamespaceDef",
     "PermissionDef",
     "RelationDef",
@@ -23,6 +28,7 @@ __all__ = [
     "SchemaDefinitionType",
     "SchemaRegistry",
     "SubjectReference",
+    "ThisRule",
     "TupleToUsersetRule",
     "UnionRule",
 ]

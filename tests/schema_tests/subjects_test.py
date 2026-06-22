@@ -127,6 +127,24 @@ class TestSubjectReference:
         assert s.relation.value == "member"
         assert s.wildcard is False
 
+    def test_accepts_str_relation(self) -> None:
+        s = SubjectReference(namespace="group", relation="member")
+        assert s.namespace.value == "group"
+        assert s.relation is not None
+        assert s.relation.value == "member"
+
+    def test_allows_respects_wildcard_semantics(self) -> None:
+        direct = SubjectReference(namespace="user")
+        wildcard = SubjectReference(namespace="user", wildcard=True)
+        userset = SubjectReference(namespace="group", relation="member")
+
+        assert direct.allows(namespace="user", entity_id="alice", relation=None)
+        assert not direct.allows(namespace="user", entity_id="*", relation=None)
+        assert wildcard.allows(namespace="user", entity_id="*", relation=None)
+        assert not wildcard.allows(namespace="user", entity_id="alice", relation=None)
+        assert userset.allows(namespace="group", entity_id="eng", relation="member")
+        assert not userset.allows(namespace="group", entity_id="*", relation="member")
+
     def test_normalizes_and_equality(self) -> None:
         s_str = SubjectReference(namespace="user")
         s_ns = SubjectReference(namespace=NamespaceId("user"))
