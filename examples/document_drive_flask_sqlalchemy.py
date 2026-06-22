@@ -194,7 +194,7 @@ def create_app() -> Flask:
 
     # Create authorization tables
     rel_repo = SQLAlchemyRelationRepository(SessionLocal)
-    rel_repo._metadata.create_all(bind=engine)
+    rel_repo.create_schema(engine)
 
     # Configure Zanzibar extension
     zanzibar = Zanzibar()

@@ -185,7 +185,7 @@ Base.metadata.create_all(bind=engine)
 
 # Create authorization tables
 rel_repo = SQLAlchemyRelationRepository(SessionLocal)
-rel_repo._metadata.create_all(bind=engine)
+rel_repo.create_schema(engine)
 
 # Optional: enable an in-memory LRU cache for hot relation tuple reads.
 tuple_cache = LruTupleCache(max_entries=10_000, ttl_seconds=30)
