@@ -1,7 +1,6 @@
 from typing import Self
 
-from zanzipy.models.namespace import NamespaceId
-from zanzipy.models.relation import Relation as Rel
+from zanzipy.models import NamespaceId, Relation as Rel
 
 
 class SubjectReference:

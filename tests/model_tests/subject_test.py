@@ -53,3 +53,16 @@ class TestSubject:
         assert as_dict == {"namespace": "user", "id": "alice", "relation": None}
         restored = Subject.from_dict(as_dict)
         assert restored == original
+
+    def test_from_dict_without_relation_key(self) -> None:
+        assert Subject.from_dict({"namespace": "user", "id": "alice"}) == (
+            Subject.from_string("user:alice")
+        )
+
+    def test_from_dict_rejects_empty_relation(self) -> None:
+        with pytest.raises(IdentifierValidationError):
+            Subject.from_dict({"namespace": "user", "id": "alice", "relation": ""})
+
+    def test_require_direct_rejects_subject_set(self) -> None:
+        with pytest.raises(SubjectValidationError, match="direct subject"):
+            Subject.from_string("group:eng#member").require_direct()

@@ -1,5 +1,4 @@
-from zanzipy.models.filter import TupleFilter
-from zanzipy.models.tuple import RelationTuple
+from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.cache.concrete.lru import LruTupleCache
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
 from zanzipy.storage.repos.decorators.cached_relations import CachedRelationRepository
@@ -96,6 +95,24 @@ class TestCachedRelationRepository:
         backend.delete_many([viewer, owner])
         broad = TupleFilter(subject_type="user", subject_id="alice")
         assert list(repo.read_reverse(broad)) == [viewer, owner]
+
+    def test_direct_subject_filter_uses_broad_cache_but_returns_exact_match(
+        self,
+    ) -> None:
+        backend = InMemoryRelationRepository()
+        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
+        repo = CachedRelationRepository(backend, cache=cache)
+
+        direct = _rt("doc", "1", "viewer", "group", "eng")
+        userset = _rt("doc", "2", "viewer", "group", "eng", "member")
+        backend.write_many([direct, userset])
+
+        exact = TupleFilter.from_subject(direct.subject)
+        assert list(repo.read_reverse(exact)) == [direct]
+
+        backend.delete_many([direct, userset])
+        broad = TupleFilter(subject_type="group", subject_id="eng")
+        assert list(repo.read_reverse(broad)) == [direct, userset]
 
     def test_subject_set_write_invalidates_broad_subject_bucket(self) -> None:
         backend = InMemoryRelationRepository()

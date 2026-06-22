@@ -3,12 +3,12 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from zanzipy.models.tuple import RelationTuple
+from zanzipy.models import Obj, Relation, RelationTuple, Subject
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
-    from zanzipy.models.filter import TupleFilter
+    from zanzipy.models import TupleFilter
 
 SUBJECT_RELATION_NONE = ""
 
@@ -95,10 +95,14 @@ class StoredRelationTuple:
     def to_tuple(self) -> RelationTuple:
         """Return the public ``RelationTuple`` represented by this row."""
 
-        subject_suffix = f"#{self.subject_rel}" if self.subject_rel else ""
-        return RelationTuple.from_string(
-            f"{self.object_ns}:{self.object_id}#{self.relation}"
-            f"@{self.subject_ns}:{self.subject_id}{subject_suffix}"
+        return RelationTuple(
+            object=Obj.from_parts(self.object_ns, self.object_id),
+            relation=Relation(self.relation),
+            subject=Subject.from_parts(
+                self.subject_ns,
+                self.subject_id,
+                None if self.subject_rel == SUBJECT_RELATION_NONE else self.subject_rel,
+            ),
         )
 
 

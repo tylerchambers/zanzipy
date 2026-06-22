@@ -1,8 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from zanzipy.models.filter import TupleFilter
-from zanzipy.models.tuple import RelationTuple
+from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.repos.concrete.sqlalchemy import SQLAlchemyRelationRepository
 
 
@@ -70,3 +69,19 @@ class TestSQLAlchemyRelationRepository:
             )
         )
         assert results == [viewer]
+
+    def test_reverse_read_can_match_direct_subject_exactly(self) -> None:
+        repo = _repo()
+        direct = RelationTuple.from_string("document:doc1#viewer@group:eng")
+        userset = RelationTuple.from_string("document:doc2#viewer@group:eng#member")
+        repo.write_many([direct, userset])
+
+        assert list(repo.read_reverse(TupleFilter.from_subject(direct.subject))) == [
+            direct
+        ]
+        assert list(
+            repo.read_reverse(TupleFilter(subject_type="group", subject_id="eng"))
+        ) == [
+            direct,
+            userset,
+        ]

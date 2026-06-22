@@ -1,14 +1,15 @@
 import pytest
 
 from zanzipy.models import (
+    CheckRequest,
+    CheckResponse,
     EntityId,
     NamespaceId,
     Obj,
     Relation,
     Subject,
+    TupleFilter,
 )
-from zanzipy.models.check import CheckRequest, CheckResponse
-from zanzipy.models.filter import TupleFilter
 
 
 class TestCheckRequest:
@@ -69,7 +70,7 @@ class TestCheckRequest:
         assert tf.relation == "owner"
         assert tf.subject_type == "user"
         assert tf.subject_id == "alice"
-        assert tf.subject_relation is None
+        assert tf.subject_relation == TupleFilter.DIRECT_SUBJECT_RELATION
 
     def test_converters_to_domain_objects(self) -> None:
         req = CheckRequest.from_strings(

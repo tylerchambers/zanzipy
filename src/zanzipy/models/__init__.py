@@ -1,9 +1,12 @@
+from .check import CheckRequest, CheckResponse
 from .errors import (
     EntityIdValidationError,
     IdentifierValidationError,
     InvalidTupleFormatError,
+    ObjectValidationError,
     SubjectValidationError,
 )
+from .filter import TupleFilter
 from .id import EntityId
 from .identifier import Identifier
 from .namespace import NamespaceId
@@ -13,6 +16,8 @@ from .subject import Subject
 from .tuple import RelationTuple
 
 __all__ = [
+    "CheckRequest",
+    "CheckResponse",
     "EntityId",
     "EntityIdValidationError",
     "Identifier",
@@ -20,8 +25,10 @@ __all__ = [
     "InvalidTupleFormatError",
     "NamespaceId",
     "Obj",
+    "ObjectValidationError",
     "Relation",
     "RelationTuple",
     "Subject",
     "SubjectValidationError",
+    "TupleFilter",
 ]

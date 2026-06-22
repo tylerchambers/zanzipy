@@ -2,12 +2,15 @@ from typing import TYPE_CHECKING
 
 from .engine.checker import CheckEngine
 from .engine.expander import ExpansionEngine, SubjectSet
-from .models.check import CheckRequest, CheckResponse
-from .models.filter import TupleFilter
-from .models.namespace import NamespaceId
-from .models.object import Obj
-from .models.subject import Subject
-from .models.tuple import RelationTuple
+from .models import (
+    CheckRequest,
+    CheckResponse,
+    Obj,
+    Relation,
+    RelationTuple,
+    Subject,
+    TupleFilter,
+)
 from .schema.relations import RelationDef
 
 if TYPE_CHECKING:
@@ -92,8 +95,7 @@ class ZanzibarClient:
             subject: "type:id" or "type:id#relation"
         """
 
-        tuple_str = f"{object}#{relation}@{subject}"
-        rt = RelationTuple.from_string(tuple_str)
+        rt = RelationTuple.from_strings(object, relation, subject)
         self._validate_tuple_against_schema(rt)
         self.relations_repository.write(rt)
 
@@ -102,7 +104,7 @@ class ZanzibarClient:
 
         parsed: list[RelationTuple] = []
         for obj, rel, subj in tuples:
-            rt = RelationTuple.from_string(f"{obj}#{rel}@{subj}")
+            rt = RelationTuple.from_strings(obj, rel, subj)
             self._validate_tuple_against_schema(rt)
             parsed.append(rt)
         self.relations_repository.write_many(parsed)
@@ -110,7 +112,7 @@ class ZanzibarClient:
     def delete(self, object: str, relation: str, subject: str) -> bool:
         """Revoke a relation tuple. Returns True if a record was deleted."""
 
-        rt = RelationTuple.from_string(f"{object}#{relation}@{subject}")
+        rt = RelationTuple.from_strings(object, relation, subject)
         # Allow deletes to proceed even if schema changed later; skip validation
         return self.relations_repository.delete(rt)
 
@@ -141,13 +143,7 @@ class ZanzibarClient:
         - Each candidate object is verified using the full rules evaluation
         """
 
-        # Validate inputs using existing value objects
-        # Validate namespace identifier; avoids coupling to object id rules here
-        NamespaceId(object_type)
-        subj = Subject.from_string(subject)
-        if subj.relation is not None:
-            raise ValueError("list_objects requires a direct subject (no '#relation')")
-
+        Subject.from_string(subject).require_direct()
         # Discover candidate object ids from tuples in this namespace
         candidates: set[str] = set()
         for t in self.relations_repository.find(TupleFilter(object_type=object_type)):
@@ -171,11 +167,7 @@ class ZanzibarClient:
         obj = Obj.from_string(object)
         direct = []
         for t in self.relations_repository.read(
-            TupleFilter(
-                object_type=str(obj.namespace),
-                object_id=str(obj.id),
-                relation=relation,
-            )
+            TupleFilter.from_parts(obj=obj, relation=Relation(relation))
         ):
             direct.append(str(t.subject))
         return direct

@@ -2,11 +2,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from zanzipy.engine.resolver import RuleResolver
-from zanzipy.models.id import EntityId
-from zanzipy.models.namespace import NamespaceId
-from zanzipy.models.object import Obj
-from zanzipy.models.relation import Relation
-from zanzipy.models.subject import Subject
+from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
@@ -287,7 +283,7 @@ class ExpansionEngine:
         effective_relation: str,
     ) -> SubjectSet:
         """Collect direct tuples for the effective relation on one object."""
-        obj = Obj(NamespaceId(object_type), EntityId(object_id))
+        obj = Obj.from_parts(object_type, object_id)
         users: set[str] = set()
         usersets: set[str] = set()
         for t in self._relations.by_object(obj):
@@ -299,11 +295,11 @@ class ExpansionEngine:
                 continue
             # Direct subject; capture "user:" explicitly, but include others too
             if str(t.subject.namespace) == "user":
-                users.add(f"{t.subject.namespace}:{t.subject.id}")
+                users.add(str(t.subject))
             else:
                 # Non-user principals appear as direct subjects; represent as
                 # userset-like
-                usersets.add(f"{t.subject.namespace}:{t.subject.id}")
+                usersets.add(str(t.subject))
         return SubjectSet(users=users, usersets=usersets)
 
     def _expand_tuple_to_userset(
@@ -317,7 +313,7 @@ class ExpansionEngine:
         visited: set[tuple[str, str, str]],
     ) -> SubjectSet:
         """Follow tuple-to-userset edges and union the target expansions."""
-        obj = Obj(NamespaceId(object_type), EntityId(object_id))
+        obj = Obj.from_parts(object_type, object_id)
         result = SubjectSet()
         for t in self._relations.by_object(obj):
             if str(t.relation) != tuple_relation:

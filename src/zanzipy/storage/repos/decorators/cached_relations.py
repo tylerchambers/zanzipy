@@ -3,15 +3,13 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from zanzipy.models.filter import TupleFilter
-from zanzipy.models.object import Obj
-from zanzipy.models.subject import Subject
+from zanzipy.models import Obj, Subject, TupleFilter
 from zanzipy.storage.repos.abstract.relations import RelationRepository
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from zanzipy.models.tuple import RelationTuple
+    from zanzipy.models import RelationTuple
     from zanzipy.storage.cache.abstract.tuples import TupleCache
 
 
@@ -56,26 +54,23 @@ class CachedRelationRepository(RelationRepository):
         return self._object_bucket(obj)
 
     def read(self, filter: TupleFilter) -> Iterable[RelationTuple]:
-        if self._is_object_bucket_filter(filter):
-            obj = Obj.from_string(f"{filter.object_type}:{filter.object_id}")
+        if filter.is_object_bucket:
+            obj = filter.object_ref
+            assert obj is not None
             return [
                 tuple_ for tuple_ in self._object_bucket(obj) if filter.matches(tuple_)
             ]
 
-        if self._is_subject_bucket_filter(filter):
-            subject = self._subject_from_filter(filter)
-            cached_filter = TupleFilter(
-                subject_type=filter.subject_type,
-                subject_id=filter.subject_id,
-                subject_relation=filter.subject_relation,
-            )
-            tuples = self._subject_bucket(subject, cached_filter)
+        if filter.is_subject_bucket:
+            subject = filter.subject_ref
+            assert subject is not None
+            tuples = self._subject_bucket(subject, filter.subject_bucket_filter())
             return [tuple_ for tuple_ in tuples if filter.matches(tuple_)]
 
         return self.backend.read(filter)
 
     def read_reverse(self, filter: TupleFilter) -> Iterable[RelationTuple]:
-        if self._is_subject_bucket_filter(filter):
+        if filter.is_subject_bucket:
             return self.read(filter)
         return self.backend.read_reverse(filter)
 
@@ -121,32 +116,6 @@ class CachedRelationRepository(RelationRepository):
         result = list(self.backend.read_reverse(filter))
         self.cache.set_by_subject(subject, result)
         return result
-
-    @staticmethod
-    def _is_object_bucket_filter(filter: TupleFilter) -> bool:
-        return (
-            filter.object_type is not None
-            and filter.object_id is not None
-            and filter.subject_type is None
-            and filter.subject_id is None
-            and filter.subject_relation is None
-        )
-
-    @staticmethod
-    def _is_subject_bucket_filter(filter: TupleFilter) -> bool:
-        return (
-            filter.subject_type is not None
-            and filter.subject_id is not None
-            and filter.object_type is None
-            and filter.object_id is None
-        )
-
-    @staticmethod
-    def _subject_from_filter(filter: TupleFilter) -> Subject:
-        suffix = (
-            f"#{filter.subject_relation}" if filter.subject_relation is not None else ""
-        )
-        return Subject.from_string(f"{filter.subject_type}:{filter.subject_id}{suffix}")
 
     def _invalidate_from_entities(self, entities: Iterable[RelationTuple]) -> None:
         seen_objects: set[Obj] = set()

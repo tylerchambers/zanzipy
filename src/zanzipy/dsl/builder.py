@@ -1,7 +1,7 @@
 from collections.abc import Iterable, Sequence
 from typing import Self
 
-from zanzipy.models.relation import Relation as Rel
+from zanzipy.models import Relation as Rel
 from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
 from zanzipy.schema.registry import SchemaRegistry

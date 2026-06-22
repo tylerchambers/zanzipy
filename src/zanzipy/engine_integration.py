@@ -7,15 +7,14 @@ without changing the client's behavior or public API.
 from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING
 
-from .models.filter import TupleFilter
-from .models.object import Obj
+from .models import Obj, TupleFilter
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from .client import ZanzibarClient
     from .engine.expander import SubjectSet
-    from .models.subject import Subject
+    from .models import Subject
     from .schema.registry import SchemaRegistry
     from .storage.repos.abstract.relations import RelationRepository
 

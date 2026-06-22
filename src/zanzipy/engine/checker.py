@@ -2,10 +2,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from zanzipy.engine.resolver import RuleResolver
-from zanzipy.models.check import CheckRequest, CheckResponse
-from zanzipy.models.id import EntityId
-from zanzipy.models.namespace import NamespaceId
-from zanzipy.models.object import Obj
+from zanzipy.models import CheckRequest, CheckResponse, EntityId, NamespaceId, Obj
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,

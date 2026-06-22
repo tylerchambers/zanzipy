@@ -1,7 +1,7 @@
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Self
 
-from zanzipy.models.namespace import NamespaceId as Ns
+from zanzipy.models import NamespaceId as Ns
 
 from .permissions import PermissionDef
 from .relations import RelationDef

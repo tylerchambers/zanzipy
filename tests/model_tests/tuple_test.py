@@ -1,3 +1,5 @@
+from typing import cast
+
 import pytest
 
 from zanzipy.models import (
@@ -109,6 +111,21 @@ class TestRelationTuple:
             Subject(NamespaceId("user"), EntityId("alice")),
         )
         assert str(t) == self.BASIC
+
+    def test_from_parts_accepts_typed_or_string_components(self) -> None:
+        assert (
+            str(RelationTuple.from_parts("document:readme", "owner", "user:alice"))
+            == self.BASIC
+        )
+
+    def test_direct_instantiation_rejects_raw_strings(self) -> None:
+        bad_object = cast("Obj", "document:readme")
+        with pytest.raises(TypeError):
+            RelationTuple(
+                bad_object,
+                Relation("owner"),
+                Subject.from_string("user:alice"),
+            )
 
     def test_repr(self) -> None:
         t = RelationTuple.from_string(self.BASIC)

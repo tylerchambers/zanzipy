@@ -9,9 +9,7 @@ from zanzipy.storage.cache.concrete._lru import LruStore
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from zanzipy.models.object import Obj
-    from zanzipy.models.subject import Subject
-    from zanzipy.models.tuple import RelationTuple
+    from zanzipy.models import Obj, RelationTuple, Subject
 
 
 @dataclass(frozen=True, slots=True)

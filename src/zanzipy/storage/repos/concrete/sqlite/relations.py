@@ -15,8 +15,7 @@ from zanzipy.storage.repos.concrete._rows import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from zanzipy.models.filter import TupleFilter
-    from zanzipy.models.tuple import RelationTuple
+    from zanzipy.models import RelationTuple, TupleFilter
 
 _SELECT_COLUMNS = ", ".join(RELATION_TUPLE_COLUMNS)
 _INSERT_COLUMNS = ", ".join(RELATION_TUPLE_COLUMNS)
