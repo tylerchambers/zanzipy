@@ -45,6 +45,11 @@ class DslCodec:
 
     @staticmethod
     def parse_subject(input_str: str) -> SubjectReference:
+        """Parse one subject shorthand into a `SubjectReference`.
+
+        Accepted forms are ``"namespace"``, ``"namespace#relation"``, and
+        ``"namespace:*"`` for wildcard subjects.
+        """
         if not isinstance(input_str, str) or not input_str.strip():
             raise ValueError("subject must be a non-empty string")
 
@@ -62,6 +67,11 @@ class DslCodec:
         self,
         subjects: SubjectInput | None,
     ) -> tuple[SubjectReference, ...]:
+        """Normalize relation subject declarations.
+
+        Accepts one string/reference or an iterable of them. ``None`` returns
+        an empty tuple so callers can decide whether subjects are required.
+        """
         if subjects is None:
             return ()
 
@@ -84,6 +94,11 @@ class DslCodec:
 
     @staticmethod
     def name_to_rule(name: str) -> RewriteRule:
+        """Convert one permission operand shorthand into a rewrite rule.
+
+        Plain names become computed-userset references. ``"a->b"`` becomes a
+        tuple-to-userset rule from relation ``a`` to computed relation ``b``.
+        """
         if not isinstance(name, str) or not name.strip():
             raise ValueError("rule operand must be a non-empty string")
 
@@ -101,6 +116,7 @@ class DslCodec:
         return ComputedUsersetRule(value)
 
     def names_to_children(self, names: RuleInput) -> tuple[RewriteRule, ...]:
+        """Convert one or more operand shorthands into rewrite-rule children."""
         values = (names,) if isinstance(names, str) else tuple(names)
         return tuple(self.name_to_rule(name) for name in values)
 
@@ -120,6 +136,12 @@ class NamespaceBuilder:
         *,
         owner: SchemaBuilder | None = None,
     ) -> None:
+        """Create a namespace builder.
+
+        ``name`` is validated when the namespace is built. ``codec`` lets
+        advanced callers customize shorthand parsing; ``owner`` is used by
+        `SchemaBuilder.namespace()` for inline fluent construction.
+        """
         self._name = name
         self._relations: dict[str, RelationDef] = {}
         self._permissions: dict[str, RewriteRule] = {}
@@ -133,7 +155,12 @@ class NamespaceBuilder:
         subjects: SubjectInput | None = None,
         rewrite: RewriteRule | None = None,
     ) -> Self:
-        """Add a relation with allowed subject types and an optional rewrite."""
+        """Add or replace a relation definition.
+
+        ``subjects`` declares allowed subject types as strings or
+        `SubjectReference` instances. Leave ``rewrite`` unset for a direct
+        stored relation; pass a rewrite tree for computed relation semantics.
+        """
 
         allowed_subjects = self._codec.to_subjects(subjects)
         if not allowed_subjects:
@@ -154,7 +181,12 @@ class NamespaceBuilder:
         intersection: RuleInput | None = None,
         exclusion: ExclusionInput | None = None,
     ) -> Self:
-        """Add a permission using one rewrite operator."""
+        """Add or replace a permission built from one shorthand operator.
+
+        Use exactly one of ``union``, ``intersection``, or ``exclusion``.
+        Operands are relation/permission names or ``"tuple->relation"``
+        tuple-to-userset shorthands.
+        """
 
         provided = sum(value is not None for value in (union, intersection, exclusion))
         if provided != 1:
@@ -175,13 +207,17 @@ class NamespaceBuilder:
         return self
 
     def permission_with_rewrite(self, name: str, rewrite: RewriteRule) -> Self:
-        """Add a permission from an explicit rewrite tree."""
+        """Add or replace a permission using an explicit rewrite tree.
+
+        Use this when the simple shorthand operators are not expressive enough
+        for the permission shape you need.
+        """
 
         self._permissions[name] = rewrite
         return self
 
     def build(self) -> NamespaceDef:
-        """Build the namespace definition."""
+        """Build and validate a `NamespaceDef` from the staged definitions."""
 
         permissions = tuple(
             PermissionDef(name=name, rewrite=rewrite)
@@ -194,7 +230,11 @@ class NamespaceBuilder:
         )
 
     def done(self) -> SchemaBuilder:
-        """Finish an inline namespace and return to its owning schema builder."""
+        """Stage this inline namespace and return to its `SchemaBuilder`.
+
+        Only builders created by `SchemaBuilder.namespace()` have an owner.
+        Standalone namespace builders should call `build()` directly.
+        """
 
         if self._owner is None:
             raise ValueError("done() is only available for inline schema namespaces")
@@ -232,20 +272,31 @@ class SchemaBuilder:
         registry: SchemaRegistry | None = None,
         codec: DslCodec | None = None,
     ) -> None:
+        """Create a schema builder.
+
+        Without ``registry``, builders share the process-wide default registry.
+        Pass an explicit registry to isolate schemas in tests or applications.
+        """
         self._registry = registry if registry is not None else get_default_registry()
         self._codec = codec or DslCodec()
         self._pending: list[NamespaceDef] = []
 
     def add_namespace(self, namespace: NamespaceDef) -> Self:
+        """Stage a completed namespace for registration during `build()`."""
         self._pending.append(namespace)
         return self
 
     def namespace(self, name: str) -> NamespaceBuilder:
-        """Start an inline namespace; call ``done()`` to stage it."""
+        """Start an inline namespace builder.
+
+        Chain relation and permission calls on the returned `NamespaceBuilder`,
+        then call `NamespaceBuilder.done()` to stage it on this schema builder.
+        """
 
         return NamespaceBuilder(name, codec=self._codec, owner=self)
 
     def build(self) -> SchemaRegistry:
+        """Register staged namespaces, validate the registry, and return it."""
         if self._pending:
             self._registry.register_many(self._pending)
             self._pending.clear()
