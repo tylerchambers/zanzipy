@@ -99,6 +99,10 @@ class Document(AuthorizableResource):
         return {"namespace": "document", "id": self.id}
 
 
+folder: Folder
+document: Document
+
+
 # === Zanzibar schema (DSL) ====================================================
 
 user_ns = NamespaceBuilder("user").build()

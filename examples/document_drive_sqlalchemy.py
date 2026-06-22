@@ -30,7 +30,6 @@ from zanzipy.storage.cache.concrete.lru import LruTupleCache
 from zanzipy.storage.repos.concrete.sqlalchemy import (
     SQLAlchemyRelationRepository,
 )
-from zanzipy.storage.repos.concrete.sqlalchemy.rules import _metadata as _rules_md
 
 # === Domain models (SQLAlchemy) ==============================================
 
@@ -219,7 +218,6 @@ rel_repo = SQLAlchemyRelationRepository(SessionLocal)
 # The relation repo exposes metadata on the instance; rules metadata is module-level
 rel_repo._metadata.create_all(bind=engine)
 
-_rules_md.create_all(bind=engine)
 
 # Optional: enable an in-memory LRU cache for hot relation tuple reads.
 # This wraps the relations repository under the hood and is fully optional.
