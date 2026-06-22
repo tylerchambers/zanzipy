@@ -44,6 +44,12 @@ class TestDslCodec:
         tup = codec.to_subjects(["user", "group#member", "folder:*"])
         assert len(tup) == 3
 
+    def test_to_subjects_accepts_single_string(self):
+        codec = DslCodec()
+        tup = codec.to_subjects("user")
+        assert len(tup) == 1
+        assert tup[0].namespace.value == "user"
+
     def test_name_to_rule_computed(self):
         codec = DslCodec()
         r = codec.name_to_rule("viewer")
@@ -70,6 +76,13 @@ class TestDslCodec:
         assert isinstance(cs[0], ComputedUsersetRule)
         assert isinstance(cs[1], TupleToUsersetRule)
 
+    def test_names_to_children_accepts_single_string(self):
+        codec = DslCodec()
+        cs = codec.names_to_children("viewer")
+        assert len(cs) == 1
+        assert isinstance(cs[0], ComputedUsersetRule)
+        assert cs[0].relation == "viewer"
+
 
 class TestNamespaceBuilder:
     def test_relation_direct_minimal(self):
@@ -82,9 +95,15 @@ class TestNamespaceBuilder:
         assert "owner" in ns.relations
         assert ns.relations["owner"].rewrite is None
 
-    def test_relation_non_direct_requires_rewrite(self):
-        with pytest.raises(ValueError, match="explicit rewrite"):
-            NamespaceBuilder("doc").relation("owner", subjects=["user"], direct=False)
+    def test_relation_with_rewrite_preserves_explicit_rewrite(self):
+        rewrite = ComputedUsersetRule("owner")
+        ns = (
+            NamespaceBuilder("doc")
+            .relation("owner", subjects="user")
+            .relation("viewer", subjects="user", rewrite=rewrite)
+            .build()
+        )
+        assert ns.relations["viewer"].rewrite is rewrite
 
     def test_permission_union(self):
         ns = (
@@ -98,6 +117,19 @@ class TestNamespaceBuilder:
         rw = ns.permissions["can_view"].rewrite
         assert isinstance(rw, UnionRule)
         assert len(rw.children) == 2
+
+    def test_permission_union_accepts_single_string(self):
+        ns = (
+            NamespaceBuilder("doc")
+            .relation("viewer", subjects=["user"])
+            .permission("can_view", union="viewer")
+            .build()
+        )
+        rw = ns.permissions["can_view"].rewrite
+        assert isinstance(rw, UnionRule)
+        assert len(rw.children) == 1
+        assert isinstance(rw.children[0], ComputedUsersetRule)
+        assert rw.children[0].relation == "viewer"
 
     def test_permission_intersection(self):
         ns = (
@@ -126,9 +158,13 @@ class TestNamespaceBuilder:
         with pytest.raises(ValueError, match="Must specify exactly one"):
             NamespaceBuilder("doc").permission("x")
 
-    def test_permission_exclusion_requires_tuple(self):
-        with pytest.raises(ValueError, match="Must specify exactly one"):
-            NamespaceBuilder("doc").permission("x", exclusion=None)
+    def test_permission_rejects_empty_operator_operands(self):
+        with pytest.raises(ValueError, match="union requires at least one operand"):
+            NamespaceBuilder("doc").permission("x", union=[])
+
+    def test_permission_exclusion_requires_two_operands(self):
+        with pytest.raises(ValueError, match="exclusion requires exactly two operands"):
+            NamespaceBuilder("doc").permission("x", exclusion=("viewer",))
 
     def test_permission_with_rewrite_explicit(self):
         ns = (
@@ -148,16 +184,21 @@ class TestSchemaBuilder:
         doc = NamespaceBuilder("doc").relation("viewer", subjects=["user"]).build()
         fold = NamespaceBuilder("folder").relation("viewer", subjects=["user"]).build()
 
-        reg = SchemaBuilder().add_namespace(doc).add_namespace(fold).build()
+        reg = (
+            SchemaBuilder(SchemaRegistry())
+            .add_namespace(doc)
+            .add_namespace(fold)
+            .build()
+        )
         assert isinstance(reg, SchemaRegistry)
         assert set(reg.list_namespaces()) == {"doc", "folder"}
 
     def test_inline_namespace_flow(self):
         reg = (
-            SchemaBuilder()
+            SchemaBuilder(SchemaRegistry())
             .namespace("doc")
-            .relation("viewer", subjects=["user"])  # proxy to NamespaceBuilder
-            .permission("can_view", union=["viewer"])  # proxy permission
+            .relation("viewer", subjects=["user"])
+            .permission("can_view", union=["viewer"])
             .done()
             .build()
         )
