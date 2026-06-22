@@ -10,6 +10,7 @@ from .rules import (
     UnionRule,
 )
 from .subjects import SubjectReference
+from .types import RewriteRuleType, SchemaDefinitionType
 
 __all__ = [
     "ComputedUsersetRule",
@@ -18,6 +19,8 @@ __all__ = [
     "PermissionDef",
     "RelationDef",
     "RewriteRule",
+    "RewriteRuleType",
+    "SchemaDefinitionType",
     "SchemaRegistry",
     "SubjectReference",
     "TupleToUsersetRule",

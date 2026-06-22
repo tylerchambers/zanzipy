@@ -9,6 +9,7 @@ from .models.object import Obj
 from .models.subject import Subject
 from .models.tuple import RelationTuple
 from .schema.subjects import SubjectReference
+from .schema.types import SchemaDefinitionType
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -218,8 +219,8 @@ class ZanzibarClient:
         relation_name = str(rt.relation)
 
         rel_def = self.schema.get_relation_definition(object_ns, relation_name)
-        def_type = rel_def.get("type")
-        if def_type != "relation":
+        def_type = SchemaDefinitionType(rel_def.get("type"))
+        if def_type is not SchemaDefinitionType.RELATION:
             raise ValueError(
                 f"Cannot write to permission '{object_ns}:{relation_name}'"
             )

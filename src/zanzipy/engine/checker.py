@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from zanzipy.engine.resolver import RuleResolver
 from zanzipy.models.check import CheckRequest, CheckResponse
 from zanzipy.models.id import EntityId
 from zanzipy.models.namespace import NamespaceId
@@ -24,7 +25,9 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class _Counters:
+    """Mutable request-scoped metrics for a check traversal."""
     tuples_examined: int = 0
+    max_depth_reached: int = 0
 
 
 class CheckEngine:
@@ -49,11 +52,14 @@ class CheckEngine:
         enable_debug: bool = False,
         compiled_rules_cache: CompiledRuleCache[RewriteRule] | None = None,
     ) -> None:
+        """Create a checker over a relation repository and schema registry."""
         self._relations = relations_repository
-        self._schema = schema
         self._max_depth = max_depth
         self._enable_debug = enable_debug
-        self._compiled_cache = compiled_rules_cache
+        self._resolver = RuleResolver(
+            schema=schema,
+            compiled_rules_cache=compiled_rules_cache,
+        )
 
     def check(self, request: CheckRequest) -> CheckResponse:
         """
@@ -79,23 +85,10 @@ class CheckEngine:
         return CheckResponse(
             allowed=allowed,
             debug_trace=debug_trace,
-            depth_reached=len(visited),
+            depth_reached=counters.max_depth_reached,
             tuples_examined=counters.tuples_examined,
         )
 
-    def _set_compiled_cache_if_available(
-        self, object_type: str, relation: str, rewrite: RewriteRule
-    ) -> RewriteRule:
-        if self._compiled_cache is not None:
-            self._compiled_cache.set(object_type, relation, rewrite)
-        return rewrite
-
-    def _get_compiled_cache_if_available(
-        self, object_type: str, relation: str
-    ) -> RewriteRule | None:
-        if self._compiled_cache is not None:
-            return self._compiled_cache.get(object_type, relation)
-        return None
 
     def _check_recursive(
         self,
@@ -112,6 +105,7 @@ class CheckEngine:
     ) -> bool:
         """Internal recursive check with cycle detection and depth limiting."""
 
+        counters.max_depth_reached = max(counters.max_depth_reached, depth)
         key = (object_type, object_id, relation, subject_type, subject_id)
         if key in visited:
             return False
@@ -121,34 +115,36 @@ class CheckEngine:
             return False
 
         visited.add(key)
-
-        if debug_trace is not None:
-            msg = (
-                f"{'  ' * depth}-> check {object_type}:{object_id}"
-                f"#{relation}@{subject_type}:{subject_id}"
-            )
-            debug_trace.append(msg)
-
-        # Resolve the rewrite rule for (object_type, relation)
         try:
-            rewrite = self._resolve_rewrite(object_type, relation)
-        except ValueError as exc:
             if debug_trace is not None:
-                debug_trace.append(f"{'  ' * depth}Error: {exc}")
-            return False
+                msg = (
+                    f"{'  ' * depth}-> check {object_type}:{object_id}"
+                    f"#{relation}@{subject_type}:{subject_id}"
+                )
+                debug_trace.append(msg)
 
-        return self._evaluate_rule(
-            rewrite=rewrite,
-            object_type=object_type,
-            object_id=object_id,
-            subject_type=subject_type,
-            subject_id=subject_id,
-            depth=depth,
-            visited=visited,
-            debug_trace=debug_trace,
-            counters=counters,
-            current_relation=relation,
-        )
+            # Resolve the rewrite rule for (object_type, relation)
+            try:
+                rewrite = self._resolver.resolve(object_type, relation)
+            except ValueError as exc:
+                if debug_trace is not None:
+                    debug_trace.append(f"{'  ' * depth}Error: {exc}")
+                return False
+
+            return self._evaluate_rule(
+                rewrite=rewrite,
+                object_type=object_type,
+                object_id=object_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                depth=depth,
+                visited=visited,
+                debug_trace=debug_trace,
+                counters=counters,
+                current_relation=relation,
+            )
+        finally:
+            visited.remove(key)
 
     def _evaluate_rule(
         self,
@@ -387,68 +383,4 @@ class CheckEngine:
 
         return False
 
-    def _resolve_rewrite(self, object_type: str, relation: str) -> RewriteRule:
-        """Resolve a rewrite rule for ``(object_type, relation)``.
 
-        Order of resolution:
-        1) Schema registry relation/permission definition
-        (with an optional compiled rule cache in front)
-        """
-
-        # Check compiled cache first
-        cached = self._get_compiled_cache_if_available(object_type, relation)
-        if cached is not None and isinstance(cached, RewriteRule):
-            return cached
-
-        # Resolve from schema registry
-        rel_def = self._schema.get_relation_definition(object_type, relation)
-        def_type = rel_def.get("type")
-        if def_type == "relation":
-            rewrite_dict = rel_def.get("rewrite")
-            if rewrite_dict is None:
-                result = DirectRule()
-                result = self._set_compiled_cache_if_available(
-                    object_type, relation, result
-                )
-                return result
-            result = RewriteRule.from_dict(rewrite_dict)
-            result = self._set_compiled_cache_if_available(
-                object_type, relation, result
-            )
-            return result
-        if def_type == "permission":
-            rewrite_dict = rel_def.get("rewrite")
-            if rewrite_dict is None:
-                # Permissions must have rewrites per validation
-                raise ValueError(f"Permission has no rewrite: {object_type}:{relation}")
-            result = RewriteRule.from_dict(rewrite_dict)
-            result = self._set_compiled_cache_if_available(
-                object_type, relation, result
-            )
-            return result
-
-        raise ValueError(
-            f"Unknown definition type for {object_type}:{relation}: {def_type!r}"
-        )
-
-    @staticmethod
-    def _current_relation_name(
-        object_type: str,
-        object_id: str,
-        visited: set[tuple[str, str, str, str, str]],
-    ) -> str:
-        """Infer current relation name from the last visited key for this object.
-
-        Since we dispatch into _evaluate_rule with the resolved rewrite already
-        for a specific relation, we need that relation name when evaluating
-        Direct/This. We extract it from the most recent matching visited key.
-        """
-
-        # Heuristic: the relation is the last visited entry for this object_type
-        # This relies on the recursive call pattern where we add to 'visited'
-        # before resolving the rewrite.
-        for ot, oid, rel, _st, _sid in reversed(list(visited)):
-            if ot == object_type and oid == object_id:
-                return rel
-        # Fallback shouldn't happen; return empty relation to avoid false positives
-        return ""

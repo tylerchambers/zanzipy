@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from zanzipy.engine.resolver import RuleResolver
 from zanzipy.models.id import EntityId
 from zanzipy.models.namespace import NamespaceId
 from zanzipy.models.object import Obj
 from zanzipy.models.relation import Relation
+from zanzipy.models.subject import Subject
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
@@ -27,25 +29,28 @@ class SubjectSet:
     """Result of expanding a relation: aggregated subjects.
 
     - users: direct user subjects in canonical string form (e.g., "user:alice")
-    - usersets: subject-set anchors in canonical form (e.g., "group:eng#member")
+    - usersets: subject-set anchors or non-user direct subjects
     """
 
     users: set[str] = field(default_factory=set)
     usersets: set[str] = field(default_factory=set)
 
     def union(self, other: SubjectSet) -> SubjectSet:
+        """Return the bucket-wise union of two expanded subject sets."""
         return SubjectSet(
             users=set(self.users | other.users),
             usersets=set(self.usersets | other.usersets),
         )
 
     def intersection(self, other: SubjectSet) -> SubjectSet:
+        """Return the bucket-wise intersection of two expanded subject sets."""
         return SubjectSet(
             users=set(self.users & other.users),
             usersets=set(self.usersets & other.usersets),
         )
 
     def difference(self, other: SubjectSet) -> SubjectSet:
+        """Return the bucket-wise difference of two expanded subject sets."""
         return SubjectSet(
             users=set(self.users - other.users),
             usersets=set(self.usersets - other.usersets),
@@ -55,9 +60,9 @@ class SubjectSet:
 class ExpansionEngine:
     """Expands a relation/permission into the set of subjects that grant it.
 
-    This computes a conservative aggregation of subjects without fully expanding
-    usersets into their member principals. The output separates direct user
-    principals from subject-set anchors.
+    Direct and union expansion preserve subject-set anchors. Intersection and
+    exclusion materialize those anchors before applying set algebra so flat
+    results stay consistent with check semantics.
     """
 
     def __init__(
@@ -68,10 +73,13 @@ class ExpansionEngine:
         max_depth: int = 25,
         compiled_rules_cache: CompiledRuleCache[RewriteRule] | None = None,
     ) -> None:
+        """Create an expansion engine over a relation repository and schema."""
         self._relations = relations_repository
-        self._schema = schema
         self._max_depth = max_depth
-        self._compiled_cache = compiled_rules_cache
+        self._resolver = RuleResolver(
+            schema=schema,
+            compiled_rules_cache=compiled_rules_cache,
+        )
 
     def expand(self, object_type: str, object_id: str, relation: str) -> SubjectSet:
         """Expand subjects that grant relation/permission on the object.
@@ -93,19 +101,6 @@ class ExpansionEngine:
             visited=visited,
         )
 
-    def _set_compiled_cache_if_available(
-        self, object_type: str, relation: str, rewrite: RewriteRule
-    ) -> RewriteRule:
-        if self._compiled_cache is not None:
-            self._compiled_cache.set(object_type, relation, rewrite)
-        return rewrite
-
-    def _get_compiled_cache_if_available(
-        self, object_type: str, relation: str
-    ) -> RewriteRule | None:
-        if self._compiled_cache is not None:
-            return self._compiled_cache.get(object_type, relation)
-        return None
 
     def _expand_recursive(
         self,
@@ -116,20 +111,24 @@ class ExpansionEngine:
         depth: int,
         visited: set[tuple[str, str, str]],
     ) -> SubjectSet:
+        """Expand one relation while treating ``visited`` as an active stack."""
         key = (object_type, object_id, relation)
         if key in visited or depth > self._max_depth:
             return SubjectSet()
-        visited.add(key)
 
-        rewrite = self._resolve_rewrite(object_type, relation)
-        return self._evaluate_rule(
-            rewrite=rewrite,
-            object_type=object_type,
-            object_id=object_id,
-            depth=depth,
-            visited=visited,
-            current_relation=relation,
-        )
+        visited.add(key)
+        try:
+            rewrite = self._resolver.resolve(object_type, relation)
+            return self._evaluate_rule(
+                rewrite=rewrite,
+                object_type=object_type,
+                object_id=object_id,
+                depth=depth,
+                visited=visited,
+                current_relation=relation,
+            )
+        finally:
+            visited.remove(key)
 
     def _evaluate_rule(
         self,
@@ -141,6 +140,7 @@ class ExpansionEngine:
         visited: set[tuple[str, str, str]],
         current_relation: str,
     ) -> SubjectSet:
+        """Evaluate one rewrite rule against the current object."""
         if isinstance(rewrite, (DirectRule, ThisRule)):
             return self._expand_direct(
                 object_type=object_type,
@@ -182,7 +182,7 @@ class ExpansionEngine:
             return result
 
         if isinstance(rewrite, IntersectionRule):
-            accum: SubjectSet | None = None
+            accum: set[str] | None = None
             for child in rewrite.children:
                 child_set = self._evaluate_rule(
                     rewrite=child,
@@ -192,8 +192,17 @@ class ExpansionEngine:
                     visited=visited,
                     current_relation=current_relation,
                 )
-                accum = child_set if accum is None else accum.intersection(child_set)
-            return accum if accum is not None else SubjectSet()
+                child_subjects = self._materialize(
+                    child_set,
+                    depth=depth + 1,
+                    visited=visited,
+                )
+                accum = (
+                    child_subjects
+                    if accum is None
+                    else accum.intersection(child_subjects)
+                )
+            return self._subject_set_from_subjects(accum or set())
 
         if isinstance(rewrite, ExclusionRule):
             base = self._evaluate_rule(
@@ -212,10 +221,64 @@ class ExpansionEngine:
                 visited=visited,
                 current_relation=current_relation,
             )
-            return base.difference(subtract)
+            base_subjects = self._materialize(
+                base,
+                depth=depth + 1,
+                visited=visited,
+            )
+            subtract_subjects = self._materialize(
+                subtract,
+                depth=depth + 1,
+                visited=visited,
+            )
+            return self._subject_set_from_subjects(base_subjects - subtract_subjects)
 
         # Unknown node
         return SubjectSet()
+
+    def _materialize(
+        self,
+        subject_set: SubjectSet,
+        *,
+        depth: int,
+        visited: set[tuple[str, str, str]],
+    ) -> set[str]:
+        """Resolve userset anchors into concrete rendered subjects."""
+        subjects = set(subject_set.users)
+        for rendered in subject_set.usersets:
+            subject = Subject.from_string(rendered)
+            if subject.relation is None:
+                subjects.add(rendered)
+                continue
+
+            expanded = self._expand_recursive(
+                object_type=str(subject.namespace),
+                object_id=str(subject.id),
+                relation=str(subject.relation),
+                depth=depth + 1,
+                visited=visited,
+            )
+            subjects.update(
+                self._materialize(
+                    expanded,
+                    depth=depth + 1,
+                    visited=visited,
+                )
+            )
+        return subjects
+
+    @staticmethod
+    def _subject_set_from_subjects(subjects: set[str]) -> SubjectSet:
+        """Split rendered subjects back into user and userset buckets."""
+        users: set[str] = set()
+        usersets: set[str] = set()
+        for rendered in subjects:
+            subject = Subject.from_string(rendered)
+            if subject.relation is None and str(subject.namespace) == "user":
+                users.add(rendered)
+            else:
+                usersets.add(rendered)
+        return SubjectSet(users=users, usersets=usersets)
 
     def _expand_direct(
         self,
@@ -224,6 +287,7 @@ class ExpansionEngine:
         object_id: str,
         effective_relation: str,
     ) -> SubjectSet:
+        """Collect direct tuples for the effective relation on one object."""
         obj = Obj(NamespaceId(object_type), EntityId(object_id))
         users: set[str] = set()
         usersets: set[str] = set()
@@ -253,6 +317,7 @@ class ExpansionEngine:
         depth: int,
         visited: set[tuple[str, str, str]],
     ) -> SubjectSet:
+        """Follow tuple-to-userset edges and union the target expansions."""
         obj = Obj(NamespaceId(object_type), EntityId(object_id))
         result = SubjectSet()
         for t in self._relations.by_object(obj):
@@ -273,37 +338,3 @@ class ExpansionEngine:
             result = result.union(child)
         return result
 
-    def _resolve_rewrite(self, object_type: str, relation: str) -> RewriteRule:
-        # Check compiled cache first
-        cached = self._get_compiled_cache_if_available(object_type, relation)
-        if cached is not None and isinstance(cached, RewriteRule):
-            return cached
-
-        # Resolve from schema
-        rel_def = self._schema.get_relation_definition(object_type, relation)
-        def_type = rel_def.get("type")
-        if def_type == "relation":
-            rewrite_dict = rel_def.get("rewrite")
-            if rewrite_dict is None:
-                result = DirectRule()
-                result = self._set_compiled_cache_if_available(
-                    object_type, relation, result
-                )
-                return result
-            result = RewriteRule.from_dict(rewrite_dict)
-            result = self._set_compiled_cache_if_available(
-                object_type, relation, result
-            )
-            return result
-        if def_type == "permission":
-            rewrite_dict = rel_def.get("rewrite")
-            if rewrite_dict is None:
-                raise ValueError(f"Permission has no rewrite: {object_type}:{relation}")
-            result = RewriteRule.from_dict(rewrite_dict)
-            result = self._set_compiled_cache_if_available(
-                object_type, relation, result
-            )
-            return result
-        raise ValueError(
-            f"Unknown definition type for {object_type}:{relation}: {def_type!r}"
-        )

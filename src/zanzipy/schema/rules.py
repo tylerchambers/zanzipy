@@ -67,7 +67,9 @@ Examples
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any
+
+from zanzipy.schema.types import RewriteRuleType
 
 # Type aliases for readability
 RelationName = str
@@ -82,41 +84,46 @@ class RewriteRule(ABC):
         pass
 
     @classmethod
-    def from_dict(cls, data: dict) -> RewriteRule:
+    def from_dict(cls, data: dict[str, Any]) -> RewriteRule:
         """Deserialize a rule from its dict form."""
-        rule_type = data.get("type")
-        if rule_type == "this":
+        raw_type = data.get("type")
+        try:
+            rule_type = RewriteRuleType(raw_type)
+        except ValueError as exc:
+            raise ValueError(f"Unknown RewriteRule type: {raw_type}") from exc
+
+        if rule_type is RewriteRuleType.THIS:
             return ThisRule()
-        if rule_type == "direct":
+        if rule_type is RewriteRuleType.DIRECT:
             return DirectRule()
-        if rule_type == "computed_userset":
+        if rule_type is RewriteRuleType.COMPUTED_USERSET:
             return ComputedUsersetRule(relation=data["relation"])
-        if rule_type == "tuple_to_userset":
+        if rule_type is RewriteRuleType.TUPLE_TO_USERSET:
             return TupleToUsersetRule(
                 tuple_relation=data["tuple_relation"],
                 computed_relation=data["computed_relation"],
             )
-        if rule_type == "union":
+        if rule_type is RewriteRuleType.UNION:
             return UnionRule(
                 children=tuple(RewriteRule.from_dict(c) for c in data["children"])
             )
-        if rule_type == "intersection":
+        if rule_type is RewriteRuleType.INTERSECTION:
             return IntersectionRule(
                 children=tuple(RewriteRule.from_dict(c) for c in data["children"])
             )
-        if rule_type == "exclusion":
+        if rule_type is RewriteRuleType.EXCLUSION:
             return ExclusionRule(
                 base=RewriteRule.from_dict(data["base"]),
                 subtract=RewriteRule.from_dict(data["subtract"]),
             )
-        raise ValueError(f"Unknown RewriteRule type: {rule_type}")
+        raise AssertionError(f"Unhandled RewriteRule type: {rule_type}")
 
 
 @dataclass(frozen=True)
 class ThisRule(RewriteRule):
     """Leaf that references the direct (stored) membership of the relation."""
 
-    type: Literal["this"] = field(default="this", init=False)
+    type: RewriteRuleType = field(default=RewriteRuleType.THIS, init=False)
 
     def to_dict(self) -> dict:
         return {"type": self.type}
@@ -128,7 +135,7 @@ class ComputedUsersetRule(RewriteRule):
 
     relation: RelationName
 
-    type: Literal["computed_userset"] = field(default="computed_userset", init=False)
+    type: RewriteRuleType = field(default=RewriteRuleType.COMPUTED_USERSET, init=False)
 
     def to_dict(self) -> dict:
         return {"type": self.type, "relation": self.relation}
@@ -149,7 +156,7 @@ class TupleToUsersetRule(RewriteRule):
             "computed_relation": self.computed_relation,
         }
 
-    type: Literal["tuple_to_userset"] = field(default="tuple_to_userset", init=False)
+    type: RewriteRuleType = field(default=RewriteRuleType.TUPLE_TO_USERSET, init=False)
 
 
 @dataclass(frozen=True)
@@ -163,7 +170,7 @@ class DirectRule(RewriteRule):
         relation owner: user  ->  DirectRule()
     """
 
-    type: Literal["direct"] = field(default="direct", init=False)
+    type: RewriteRuleType = field(default=RewriteRuleType.DIRECT, init=False)
 
     def to_dict(self) -> dict:
         return {"type": self.type}
@@ -188,7 +195,7 @@ class UnionRule(RewriteRule):
     def to_dict(self) -> dict:
         return {"type": self.type, "children": [c.to_dict() for c in self.children]}
 
-    type: Literal["union"] = field(default="union", init=False)
+    type: RewriteRuleType = field(default=RewriteRuleType.UNION, init=False)
 
 
 @dataclass(frozen=True)
@@ -210,7 +217,7 @@ class IntersectionRule(RewriteRule):
     def to_dict(self) -> dict:
         return {"type": self.type, "children": [c.to_dict() for c in self.children]}
 
-    type: Literal["intersection"] = field(default="intersection", init=False)
+    type: RewriteRuleType = field(default=RewriteRuleType.INTERSECTION, init=False)
 
 
 @dataclass(frozen=True)
@@ -238,4 +245,4 @@ class ExclusionRule(RewriteRule):
             "subtract": self.subtract.to_dict(),
         }
 
-    type: Literal["exclusion"] = field(default="exclusion", init=False)
+    type: RewriteRuleType = field(default=RewriteRuleType.EXCLUSION, init=False)

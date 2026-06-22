@@ -16,6 +16,7 @@ from zanzipy.schema.rules import (
     UnionRule,
 )
 from zanzipy.schema.subjects import SubjectReference
+from zanzipy.schema.types import SchemaDefinitionType
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
@@ -126,6 +127,123 @@ class TestExpansionEngine:
         s_ex = engine.expand("document", "d", "comment_exclusion")
         assert s_ex.users == {"user:bob"}
 
+
+    def test_reused_relation_operand_is_path_local(self) -> None:
+        registry = SchemaRegistry()
+        ns = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "owner",
+                    (SubjectReference.from_dict({"namespace": "user"}),),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="owner_twice",
+                    rewrite=IntersectionRule(
+                        children=(
+                            ComputedUsersetRule("owner"),
+                            ComputedUsersetRule("owner"),
+                        )
+                    ),
+                ),
+                PermissionDef(
+                    name="owner_minus_owner",
+                    rewrite=ExclusionRule(
+                        base=ComputedUsersetRule("owner"),
+                        subtract=ComputedUsersetRule("owner"),
+                    ),
+                ),
+            ),
+        )
+        registry.register(ns)
+
+        repo = InMemoryRelationRepository()
+        repo.write(RelationTuple.from_string("document:doc#owner@user:alice"))
+
+        engine = ExpansionEngine(relations_repository=repo, schema=registry)
+
+        owner_twice = engine.expand("document", "doc", "owner_twice")
+        assert owner_twice.users == {"user:alice"}
+        assert owner_twice.usersets == set()
+
+        owner_minus_owner = engine.expand("document", "doc", "owner_minus_owner")
+        assert owner_minus_owner.users == set()
+        assert owner_minus_owner.usersets == set()
+
+    def test_set_algebra_materializes_userset_anchors(self) -> None:
+        registry = SchemaRegistry()
+        group_ns = NamespaceDef(
+            name="group",
+            relations=(
+                RelationDef.with_subjects(
+                    "member",
+                    (SubjectReference.from_dict({"namespace": "user"}),),
+                ),
+            ),
+            permissions=(),
+        )
+        document_ns = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "owner",
+                    (SubjectReference.from_dict({"namespace": "user"}),),
+                ),
+                RelationDef.with_subjects(
+                    "viewer",
+                    (
+                        SubjectReference.from_dict(
+                            {"namespace": "group", "relation": "member"}
+                        ),
+                    ),
+                ),
+                RelationDef.with_subjects(
+                    "banned",
+                    (SubjectReference.from_dict({"namespace": "user"}),),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="owner_and_viewer",
+                    rewrite=IntersectionRule(
+                        children=(
+                            ComputedUsersetRule("owner"),
+                            ComputedUsersetRule("viewer"),
+                        )
+                    ),
+                ),
+                PermissionDef(
+                    name="viewer_without_banned",
+                    rewrite=ExclusionRule(
+                        base=ComputedUsersetRule("viewer"),
+                        subtract=ComputedUsersetRule("banned"),
+                    ),
+                ),
+            ),
+        )
+        registry.register_many([group_ns, document_ns])
+
+        repo = InMemoryRelationRepository()
+        repo.write(RelationTuple.from_string("group:eng#member@user:alice"))
+        repo.write(RelationTuple.from_string("group:eng#member@user:bob"))
+        repo.write(RelationTuple.from_string("document:doc#owner@user:alice"))
+        repo.write(RelationTuple.from_string("document:doc#viewer@group:eng#member"))
+        repo.write(RelationTuple.from_string("document:doc#banned@user:alice"))
+
+        engine = ExpansionEngine(relations_repository=repo, schema=registry)
+
+        owner_and_viewer = engine.expand("document", "doc", "owner_and_viewer")
+        assert owner_and_viewer.users == {"user:alice"}
+        assert owner_and_viewer.usersets == set()
+
+        viewer_without_banned = engine.expand(
+            "document", "doc", "viewer_without_banned"
+        )
+        assert viewer_without_banned.users == {"user:bob"}
+        assert viewer_without_banned.usersets == set()
+
     def test_tuple_to_userset_cross_namespace(self) -> None:
         registry = SchemaRegistry()
         folder_ns = NamespaceDef(
@@ -198,7 +316,11 @@ class TestExpansionEngine:
 
         # Permission missing rewrite -> ValueError("Permission has no rewrite")
         def _fake_get_def(self, object_type: str, relation: str) -> dict:  # type: ignore[override]
-            return {"type": "permission", "name": relation, "rewrite": None}
+            return {
+                "type": SchemaDefinitionType.PERMISSION,
+                "name": relation,
+                "rewrite": None,
+            }
 
         monkeypatch.setattr(
             SchemaRegistry,
@@ -294,6 +416,77 @@ class TestExpansionEngine:
         before_sets = len(cache.set_calls)
         engine.expand("doc", "d2", "view")
         assert len(cache.set_calls) == before_sets
+
+    def test_compiled_cache_refreshes_after_schema_update(self) -> None:
+        registry = SchemaRegistry()
+        ns = NamespaceDef(
+            name="doc",
+            relations=(
+                RelationDef.with_subjects(
+                    "viewer", (SubjectReference.from_dict({"namespace": "user"}),)
+                ),
+                RelationDef.with_subjects(
+                    "editor", (SubjectReference.from_dict({"namespace": "user"}),)
+                ),
+            ),
+            permissions=(
+                PermissionDef(name="view", rewrite=ComputedUsersetRule("viewer")),
+            ),
+        )
+        registry.register(ns)
+
+        repo = InMemoryRelationRepository()
+        repo.write(RelationTuple.from_string("doc:1#viewer@user:alice"))
+
+        from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
+
+        class _FakeCache(CompiledRuleCache[RewriteRule]):
+            def __init__(self) -> None:
+                self.set_calls: list[tuple[str, str, RewriteRule]] = []
+                self._store: dict[tuple[str, str], RewriteRule] = {}
+
+            def get(self, namespace: str, name: str) -> RewriteRule | None:
+                return self._store.get((namespace, name))
+
+            def set(self, namespace: str, name: str, compiled: RewriteRule) -> None:
+                self.set_calls.append((namespace, name, compiled))
+                self._store[(namespace, name)] = compiled
+
+            def invalidate(self, namespace: str, name: str) -> None:
+                self._store.pop((namespace, name), None)
+
+            def invalidate_namespace(self, namespace: str) -> None:
+                for key in list(self._store):
+                    if key[0] == namespace:
+                        self._store.pop(key, None)
+
+        cache = _FakeCache()
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            schema=registry,
+            compiled_rules_cache=cache,
+        )
+
+        initial = engine.expand("doc", "1", "view")
+        assert initial.users == {"user:alice"}
+
+        registry.update_namespace(
+            NamespaceDef(
+                name="doc",
+                relations=tuple(ns.relations.values()),
+                permissions=(
+                    PermissionDef(name="view", rewrite=ComputedUsersetRule("editor")),
+                ),
+            )
+        )
+
+        refreshed = engine.expand("doc", "1", "view")
+        assert refreshed.users == set()
+        view_sets = [call for call in cache.set_calls if call[:2] == ("doc", "view")]
+        assert len(view_sets) == 2
+        _, _, compiled = view_sets[-1]
+        assert isinstance(compiled, ComputedUsersetRule)
+        assert compiled.relation == "editor"
 
 
 class TestSubjectSetOps:

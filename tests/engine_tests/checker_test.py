@@ -14,6 +14,7 @@ from zanzipy.schema.rules import (
     UnionRule,
 )
 from zanzipy.schema.subjects import SubjectReference
+from zanzipy.schema.types import SchemaDefinitionType
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
@@ -168,6 +169,51 @@ class TestCheckEngine:
         req = CheckRequest.from_strings("document:doc3", "can_comment", "user:carol")
         assert engine.check(req).allowed is False
 
+
+    def test_reused_relation_operand_is_path_local(self) -> None:
+        registry = SchemaRegistry()
+        ns = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "owner",
+                    (SubjectReference.from_dict({"namespace": "user"}),),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="owner_twice",
+                    rewrite=IntersectionRule(
+                        children=(
+                            ComputedUsersetRule("owner"),
+                            ComputedUsersetRule("owner"),
+                        )
+                    ),
+                ),
+                PermissionDef(
+                    name="owner_minus_owner",
+                    rewrite=ExclusionRule(
+                        base=ComputedUsersetRule("owner"),
+                        subtract=ComputedUsersetRule("owner"),
+                    ),
+                ),
+            ),
+        )
+        registry.register(ns)
+
+        repo = InMemoryRelationRepository()
+        repo.write(RelationTuple.from_string("document:doc#owner@user:alice"))
+
+        engine = CheckEngine(relations_repository=repo, schema=registry)
+
+        req = CheckRequest.from_strings("document:doc", "owner_twice", "user:alice")
+        assert engine.check(req).allowed is True
+
+        req = CheckRequest.from_strings(
+            "document:doc", "owner_minus_owner", "user:alice"
+        )
+        assert engine.check(req).allowed is False
+
     def test_tuple_to_userset(self) -> None:
         registry = SchemaRegistry()
 
@@ -269,7 +315,11 @@ class TestCheckEngine:
         registry.register(ns)
 
         def _fake_get_def(self, object_type: str, relation: str) -> dict:  # type: ignore[override]
-            return {"type": "permission", "name": relation, "rewrite": None}
+            return {
+                "type": SchemaDefinitionType.PERMISSION,
+                "name": relation,
+                "rewrite": None,
+            }
 
         # Patch on the class, not the instance (slots prevents instance patching)
         monkeypatch.setattr(
@@ -458,3 +508,73 @@ class TestCheckEngine:
         before = len(cache.set_calls)
         engine.check(req)
         assert len(cache.set_calls) == before
+
+    def test_compiled_cache_refreshes_after_schema_update(self) -> None:
+        registry = SchemaRegistry()
+        ns = NamespaceDef(
+            name="doc",
+            relations=(
+                RelationDef.with_subjects(
+                    "viewer", (SubjectReference.from_dict({"namespace": "user"}),)
+                ),
+                RelationDef.with_subjects(
+                    "editor", (SubjectReference.from_dict({"namespace": "user"}),)
+                ),
+            ),
+            permissions=(
+                PermissionDef(name="view", rewrite=ComputedUsersetRule("viewer")),
+            ),
+        )
+        registry.register(ns)
+
+        repo = InMemoryRelationRepository()
+        repo.write(RelationTuple.from_string("doc:1#viewer@user:alice"))
+
+        from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
+
+        class _FakeCache(CompiledRuleCache[RewriteRule]):
+            def __init__(self) -> None:
+                self.set_calls: list[tuple[str, str, RewriteRule]] = []
+                self._store: dict[tuple[str, str], RewriteRule] = {}
+
+            def get(self, namespace: str, name: str) -> RewriteRule | None:
+                return self._store.get((namespace, name))
+
+            def set(self, namespace: str, name: str, compiled: RewriteRule) -> None:
+                self.set_calls.append((namespace, name, compiled))
+                self._store[(namespace, name)] = compiled
+
+            def invalidate(self, namespace: str, name: str) -> None:
+                self._store.pop((namespace, name), None)
+
+            def invalidate_namespace(self, namespace: str) -> None:
+                for key in list(self._store):
+                    if key[0] == namespace:
+                        self._store.pop(key, None)
+
+        cache = _FakeCache()
+        engine = CheckEngine(
+            relations_repository=repo,
+            schema=registry,
+            compiled_rules_cache=cache,
+        )
+        req = CheckRequest.from_strings("doc:1", "view", "user:alice")
+
+        assert engine.check(req).allowed is True
+
+        registry.update_namespace(
+            NamespaceDef(
+                name="doc",
+                relations=tuple(ns.relations.values()),
+                permissions=(
+                    PermissionDef(name="view", rewrite=ComputedUsersetRule("editor")),
+                ),
+            )
+        )
+
+        assert engine.check(req).allowed is False
+        view_sets = [call for call in cache.set_calls if call[:2] == ("doc", "view")]
+        assert len(view_sets) == 2
+        _, _, refreshed = view_sets[-1]
+        assert isinstance(refreshed, ComputedUsersetRule)
+        assert refreshed.relation == "editor"

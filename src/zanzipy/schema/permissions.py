@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, Self
 
 from zanzipy.models.relation import Relation as Rel
 
+from .types import SchemaDefinitionType
+
 if TYPE_CHECKING:
     from .rules import RewriteRule
 else:
@@ -24,7 +26,7 @@ class PermissionDef:
 
     def to_dict(self) -> dict:
         return {
-            "type": "permission",
+            "type": SchemaDefinitionType.PERMISSION,
             "name": self.name,
             "rewrite": self.rewrite.to_dict(),
             "description": self.description,

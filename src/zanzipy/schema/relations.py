@@ -4,6 +4,7 @@ from zanzipy.models.relation import Relation as Rel
 
 from .rules import RewriteRule
 from .subjects import SubjectReference
+from .types import SchemaDefinitionType
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -81,7 +82,7 @@ class RelationDef:
 
     def to_dict(self) -> dict:
         return {
-            "type": "relation",
+            "type": SchemaDefinitionType.RELATION,
             "name": self.name,
             "allowed_subjects": [s.to_dict() for s in self.allowed_subjects],
             "rewrite": self.rewrite.to_dict() if self.rewrite else None,
