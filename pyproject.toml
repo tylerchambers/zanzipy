@@ -1,0 +1,93 @@
+[project]
+name = "zanzipy"
+version = "0.1.3"
+description = "Building blocks for zanzibar style ReBAC"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+authors = [{ name = "Tyler Chambers" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["rebac", "zanzibar", "authorization", "acl", "relations"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+  "Intended Audience :: Developers",
+  "Topic :: Security",
+  "Typing :: Typed",
+]
+urls = { Homepage = "https://github.com/tylerchambers/zanzipy", Repository = "https://github.com/tylerchambers/zanzipy", Issues = "https://github.com/tylerchambers/zanzipy/issues" }
+
+[project.optional-dependencies]
+sqlite = []
+sqlalchemy = [
+    "SQLAlchemy>=2,<3",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.14.0",
+    "flask>=2.3",
+    "sqlalchemy>=2,<3",
+    "redis>=5,<6",
+    "ty>=0.0.1a22",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort (import sorting)
+    "I",
+    # flake8-comprehensions
+    "C4",
+    # pytest style helpers
+    "PT",
+    # move typing-only imports behind TYPE_CHECKING
+    "TCH",
+    # flake8-tidy-imports (banned imports/APIs)
+    "TID",
+    # Ruff-specific rules
+    "RUF",
+]
+extend-select = [
+    # Prefer PEP 695 `type` aliases over TypeAlias/TypeAliasType
+    "UP040",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["zanzipy"]
+combine-as-imports = true
+force-sort-within-sections = true
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"__future__.annotations" = { msg = "Forbidden: do not use 'from __future__ import annotations'" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["*_test.py"]
+addopts = "-q --strict-markers -ra"
+xfail_strict = true

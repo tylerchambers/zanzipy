@@ -1,0 +1,55 @@
+import pytest
+
+from zanzipy.models import (
+    EntityIdValidationError,
+    IdentifierValidationError,
+    Subject,
+    SubjectValidationError,
+)
+
+
+class TestSubject:
+    @pytest.mark.parametrize(
+        ("subject_string", "expected"),
+        [
+            ("user:alice", "user:alice"),
+            ("group:eng#member", "group:eng#member"),
+        ],
+    )
+    def test_from_string_and_str(self, subject_string: str, expected: str) -> None:
+        s = Subject.from_string(subject_string)
+        assert str(s) == expected
+
+    @pytest.mark.parametrize(
+        ("subject_string", "exc_type"),
+        [
+            ("user", SubjectValidationError),  # missing ':'
+            ("user:", EntityIdValidationError),  # empty id
+            (":alice", IdentifierValidationError),  # empty namespace
+            ("user:al ice", EntityIdValidationError),  # spaces in id
+            ("user:alice#", SubjectValidationError),  # empty relation
+        ],
+    )
+    def test_invalid_subjects(
+        self, subject_string: str, exc_type: type[Exception]
+    ) -> None:
+        with pytest.raises(exc_type):
+            Subject.from_string(subject_string)
+
+    def test_string_representation(self) -> None:
+        s = Subject.from_string("user:alice#member")
+        assert str(s) == "user:alice#member"
+
+    def test_to_from_dict_round_trip_with_relation(self) -> None:
+        original = Subject.from_string("group:eng#member")
+        as_dict = original.to_dict()
+        assert as_dict == {"namespace": "group", "id": "eng", "relation": "member"}
+        restored = Subject.from_dict(as_dict)
+        assert restored == original
+
+    def test_to_from_dict_round_trip_without_relation(self) -> None:
+        original = Subject.from_string("user:alice")
+        as_dict = original.to_dict()
+        assert as_dict == {"namespace": "user", "id": "alice", "relation": None}
+        restored = Subject.from_dict(as_dict)
+        assert restored == original

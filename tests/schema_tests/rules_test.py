@@ -1,0 +1,193 @@
+import pytest
+
+from zanzipy.schema.rules import (
+    ComputedUsersetRule,
+    DirectRule,
+    ExclusionRule,
+    IntersectionRule,
+    RewriteRule,
+    ThisRule,
+    TupleToUsersetRule,
+    UnionRule,
+)
+
+
+class TestDirectRule:
+    def test_to_dict_and_spicedb(self) -> None:
+        rule = DirectRule()
+        assert rule.to_dict() == {"type": "direct"}
+
+
+@pytest.mark.parametrize(
+    ("children", "expected_dict", "expected_spicedb"),
+    [
+        ((), {"type": "union", "children": []}, ""),
+        (
+            (ComputedUsersetRule("viewer"),),
+            {
+                "type": "union",
+                "children": [{"type": "computed_userset", "relation": "viewer"}],
+            },
+            "viewer",
+        ),
+        (
+            (ComputedUsersetRule("viewer"), ComputedUsersetRule("editor")),
+            {
+                "type": "union",
+                "children": [
+                    {"type": "computed_userset", "relation": "viewer"},
+                    {"type": "computed_userset", "relation": "editor"},
+                ],
+            },
+            "viewer + editor",
+        ),
+    ],
+)
+class TestUnionRule:
+    def test_union(self, children, expected_dict, expected_spicedb) -> None:
+        rule = UnionRule(children=children)
+        assert rule.to_dict() == expected_dict
+
+
+@pytest.mark.parametrize(
+    ("children", "expected_dict", "expected_spicedb"),
+    [
+        ((), {"type": "intersection", "children": []}, ""),
+        (
+            (ComputedUsersetRule("viewer"), ComputedUsersetRule("member")),
+            {
+                "type": "intersection",
+                "children": [
+                    {"type": "computed_userset", "relation": "viewer"},
+                    {"type": "computed_userset", "relation": "member"},
+                ],
+            },
+            "viewer & member",
+        ),
+    ],
+)
+class TestIntersectionRule:
+    def test_intersection(self, children, expected_dict, expected_spicedb) -> None:
+        rule = IntersectionRule(children=children)
+        assert rule.to_dict() == expected_dict
+
+
+@pytest.mark.parametrize(
+    ("base", "subtract", "expected_dict", "expected_spicedb"),
+    [
+        (
+            ComputedUsersetRule("member"),
+            ComputedUsersetRule(""),
+            {
+                "type": "exclusion",
+                "base": {"type": "computed_userset", "relation": "member"},
+                "subtract": {"type": "computed_userset", "relation": ""},
+            },
+            "member",
+        ),
+        (
+            ComputedUsersetRule("member"),
+            ComputedUsersetRule("banned"),
+            {
+                "type": "exclusion",
+                "base": {"type": "computed_userset", "relation": "member"},
+                "subtract": {"type": "computed_userset", "relation": "banned"},
+            },
+            "member - banned",
+        ),
+        (
+            ComputedUsersetRule(""),
+            ComputedUsersetRule("banned"),
+            {
+                "type": "exclusion",
+                "base": {"type": "computed_userset", "relation": ""},
+                "subtract": {"type": "computed_userset", "relation": "banned"},
+            },
+            "",
+        ),
+    ],
+)
+class TestExclusionRule:
+    def test_exclusion(self, base, subtract, expected_dict, expected_spicedb) -> None:
+        rule = ExclusionRule(base=base, subtract=subtract)
+        assert rule.to_dict() == expected_dict
+
+
+class TestRewriteRuleFromDict:
+    def test_from_dict_this(self) -> None:
+        d = {"type": "this"}
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, ThisRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_direct(self) -> None:
+        d = {"type": "direct"}
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, DirectRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_computed_userset(self) -> None:
+        d = {"type": "computed_userset", "relation": "viewer"}
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, ComputedUsersetRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_tuple_to_userset(self) -> None:
+        d = {
+            "type": "tuple_to_userset",
+            "tuple_relation": "parent",
+            "computed_relation": "member",
+        }
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, TupleToUsersetRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_union(self) -> None:
+        d = {"type": "union", "children": []}
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, UnionRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_union_with_children(self) -> None:
+        d = {
+            "type": "union",
+            "children": [
+                {"type": "computed_userset", "relation": "viewer"},
+                {"type": "computed_userset", "relation": "editor"},
+            ],
+        }
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, UnionRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_intersection(self) -> None:
+        d = {"type": "intersection", "children": []}
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, IntersectionRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_intersection_with_children(self) -> None:
+        d = {
+            "type": "intersection",
+            "children": [
+                {"type": "computed_userset", "relation": "viewer"},
+                {"type": "computed_userset", "relation": "member"},
+            ],
+        }
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, IntersectionRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_exclusion(self) -> None:
+        d = {
+            "type": "exclusion",
+            "base": {"type": "computed_userset", "relation": "member"},
+            "subtract": {"type": "computed_userset", "relation": "banned"},
+        }
+        rule = RewriteRule.from_dict(d)
+        assert isinstance(rule, ExclusionRule)
+        assert rule.to_dict() == d
+
+    def test_from_dict_unknown_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown RewriteRule type"):
+            RewriteRule.from_dict({"type": "unknown"})
