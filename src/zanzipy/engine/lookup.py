@@ -67,7 +67,151 @@ class LookupEngine:
             context=context,
             depth=0,
         )
+        if self._needs_canonical_check_filter(
+            resource_type=resource_type,
+            relation=permission,
+        ):
+            resources = self._filter_authorized_resources(
+                resources=resources,
+                relation=permission,
+                subject=subject,
+                context=context,
+            )
+
         return sorted(resources, key=str)
+
+    def _filter_authorized_resources(
+        self,
+        *,
+        resources: set[Obj],
+        relation: str,
+        subject: Subject,
+        context: ReadContext,
+    ) -> set[Obj]:
+        """Keep complex reverse-lookup candidates aligned with canonical checks."""
+
+        return {
+            obj
+            for obj in resources
+            if self._checker.check(
+                CheckRequest(
+                    object_type=str(obj.namespace),
+                    object_id=str(obj.id),
+                    relation=relation,
+                    subject_type=str(subject.namespace),
+                    subject_id=str(subject.id),
+                ),
+                context=context,
+            ).allowed
+        }
+
+    def _needs_canonical_check_filter(
+        self,
+        *,
+        resource_type: str,
+        relation: str,
+    ) -> bool:
+        """Return whether reverse candidates cross non-direct userset semantics."""
+
+        seen: set[tuple[str, str]] = set()
+        worklist = [(resource_type, relation)]
+        next_relation = 0
+
+        while next_relation < len(worklist):
+            current_resource_type, current_relation = worklist[next_relation]
+            next_relation += 1
+            relation_ref = (current_resource_type, current_relation)
+            if relation_ref in seen:
+                continue
+            seen.add(relation_ref)
+
+            try:
+                rewrite = self._model.resolve(
+                    current_resource_type,
+                    current_relation,
+                )
+            except ValueError:
+                continue
+
+            if self._relation_uses_complex_userset(
+                resource_type=current_resource_type,
+                relation=current_relation,
+            ):
+                return True
+
+            for child_ref in self._rewrite_relation_refs(
+                rewrite,
+                resource_type=current_resource_type,
+            ):
+                if child_ref not in seen:
+                    worklist.append(child_ref)
+
+        return False
+
+    def _relation_uses_complex_userset(
+        self,
+        *,
+        resource_type: str,
+        relation: str,
+    ) -> bool:
+        for userset_resource_type, userset_relation in self._reachable_userset_refs(
+            resource_type=resource_type,
+            relation=relation,
+        ):
+            try:
+                userset_rewrite = self._model.resolve(
+                    userset_resource_type,
+                    userset_relation,
+                )
+            except ValueError:
+                return True
+
+            if not isinstance(userset_rewrite, (DirectRule, ThisRule)):
+                return True
+
+        return False
+
+    def _rewrite_relation_refs(
+        self,
+        rewrite: RewriteRule,
+        *,
+        resource_type: str,
+    ) -> tuple[tuple[str, str], ...]:
+        if isinstance(rewrite, ComputedUsersetRule):
+            return ((resource_type, rewrite.relation),)
+
+        if isinstance(rewrite, TupleToUsersetRule):
+            return tuple(
+                (target_type, rewrite.computed_relation)
+                for target_type in self._model.tuple_to_userset_target_types(
+                    resource_type=resource_type,
+                    tuple_relation=rewrite.tuple_relation,
+                )
+            )
+
+        if isinstance(rewrite, (UnionRule, IntersectionRule)):
+            return tuple(
+                child_ref
+                for child in rewrite.children
+                for child_ref in self._rewrite_relation_refs(
+                    child,
+                    resource_type=resource_type,
+                )
+            )
+
+        if isinstance(rewrite, ExclusionRule):
+            return (
+                *self._rewrite_relation_refs(
+                    rewrite.base,
+                    resource_type=resource_type,
+                ),
+                *self._rewrite_relation_refs(
+                    rewrite.subtract,
+                    resource_type=resource_type,
+                ),
+            )
+
+        return ()
 
     def _lookup_relation(
         self,
@@ -261,7 +405,7 @@ class LookupEngine:
         while next_subject < len(worklist):
             current_subject, current_depth = worklist[next_subject]
             next_subject += 1
-            if current_depth > self._max_depth:
+            if current_depth > self._max_depth and current_subject.relation is not None:
                 continue
 
             current_ref = (
