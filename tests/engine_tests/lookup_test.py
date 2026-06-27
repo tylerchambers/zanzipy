@@ -258,6 +258,52 @@ def test_lookup_honors_computed_userset_rewrites_in_subject_sets() -> None:
     assert client.list_objects("document", "viewer", "user:alice") == ["document:spec"]
 
 
+def test_lookup_honors_tuple_to_userset_rewrites_in_subject_sets() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        [
+            NamespaceDef(
+                name="team",
+                relations=(RelationDef.with_subjects("member", (_user_ref(),)),),
+            ),
+            NamespaceDef(
+                name="group",
+                relations=(
+                    RelationDef.with_subjects(
+                        "parent",
+                        (SubjectReference.from_dict({"namespace": "team"}),),
+                    ),
+                    RelationDef.with_subjects(
+                        "member",
+                        (_user_ref(),),
+                        rewrite=TupleToUsersetRule("parent", "member"),
+                    ),
+                ),
+            ),
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects("viewer", (_group_member_ref(),)),
+                ),
+            ),
+        ]
+    )
+    client = ZanzibarClient(
+        relations_repository=InMemoryRelationRepository(),
+        schema=registry,
+    )
+    client.write_many(
+        [
+            ("team:blue", "member", "user:alice"),
+            ("group:eng", "parent", "team:blue"),
+            ("document:spec", "viewer", "group:eng#member"),
+        ]
+    )
+
+    assert client.check("document:spec", "viewer", "user:alice") is True
+    assert client.list_objects("document", "viewer", "user:alice") == ["document:spec"]
+
+
 def test_lookup_validates_non_direct_userset_rewrites_before_traversal() -> None:
     registry = SchemaRegistry()
     registry.register_many(

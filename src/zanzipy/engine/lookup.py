@@ -270,29 +270,57 @@ class LookupEngine:
                 else None
             )
             if current_ref is not None:
-                for parent_ref, userset_cost in semantic_parents.get(current_ref, ()):
+                for parent_ref, userset_cost, tuple_relation in semantic_parents.get(
+                    current_ref,
+                    (),
+                ):
                     userset_depth = current_depth + userset_cost
                     if userset_depth > self._max_depth:
                         continue
 
-                    userset_subject = Subject.from_parts(
-                        parent_ref[0],
-                        str(current_subject.id),
-                        parent_ref[1],
-                    )
-                    if not self._userset_semantically_reachable(
-                        userset_subject=userset_subject,
-                        subject=subject,
-                        context=context,
-                    ):
-                        continue
+                    if tuple_relation is None:
+                        userset_subjects = (
+                            Subject.from_parts(
+                                parent_ref[0],
+                                str(current_subject.id),
+                                parent_ref[1],
+                            ),
+                        )
+                    else:
+                        userset_subjects = tuple(
+                            Subject.from_parts(
+                                str(relation_tuple.object.namespace),
+                                str(relation_tuple.object.id),
+                                parent_ref[1],
+                            )
+                            for relation_tuple in self._relations.read_reverse(
+                                TupleFilter(
+                                    object_type=parent_ref[0],
+                                    relation=tuple_relation,
+                                    subject_type=str(current_subject.namespace),
+                                    subject_id=str(current_subject.id),
+                                    subject_relation=(
+                                        TupleFilter.DIRECT_SUBJECT_RELATION
+                                    ),
+                                ),
+                                context=context,
+                            )
+                        )
 
-                    seen_depth = seen_depths.get(userset_subject)
-                    if seen_depth is not None and seen_depth <= userset_depth:
-                        continue
+                    for userset_subject in userset_subjects:
+                        if not self._userset_semantically_reachable(
+                            userset_subject=userset_subject,
+                            subject=subject,
+                            context=context,
+                        ):
+                            continue
 
-                    seen_depths[userset_subject] = userset_depth
-                    worklist.append((userset_subject, userset_depth))
+                        seen_depth = seen_depths.get(userset_subject)
+                        if seen_depth is not None and seen_depth <= userset_depth:
+                            continue
+
+                        seen_depths[userset_subject] = userset_depth
+                        worklist.append((userset_subject, userset_depth))
 
             exact_subject_filter = TupleFilter.from_subject(current_subject)
             for relation_tuple in self._relations.read_reverse(
@@ -403,9 +431,12 @@ class LookupEngine:
                 resource_type=subject_type,
                 relation=subject_relation,
             )
-            dependency_refs = self._rewrite_dependency_refs(
-                resource_type=subject_type,
-                relation=subject_relation,
+            dependency_refs = tuple(
+                child_ref
+                for child_ref, _, _ in self._rewrite_dependency_refs(
+                    resource_type=subject_type,
+                    relation=subject_relation,
+                )
             )
             for nested_ref in (*nested_refs, *dependency_refs):
                 if nested_ref in reachable:
@@ -418,16 +449,21 @@ class LookupEngine:
     def _semantic_parent_refs(
         self,
         userset_refs: set[tuple[str, str]],
-    ) -> dict[tuple[str, str], tuple[tuple[tuple[str, str], int], ...]]:
-        parents: dict[tuple[str, str], list[tuple[tuple[str, str], int]]] = {}
+    ) -> dict[tuple[str, str], tuple[tuple[tuple[str, str], int, str | None], ...]]:
+        parents: dict[
+            tuple[str, str],
+            list[tuple[tuple[str, str], int, str | None]],
+        ] = {}
         for parent_ref in userset_refs:
-            for child_ref, cost in self._rewrite_dependency_refs(
+            for child_ref, cost, tuple_relation in self._rewrite_dependency_refs(
                 resource_type=parent_ref[0],
                 relation=parent_ref[1],
-            ).items():
+            ):
                 if child_ref not in userset_refs:
                     continue
-                parents.setdefault(child_ref, []).append((parent_ref, cost))
+                parents.setdefault(child_ref, []).append(
+                    (parent_ref, cost, tuple_relation)
+                )
 
         return {
             child_ref: tuple(parent_refs) for child_ref, parent_refs in parents.items()
@@ -438,43 +474,69 @@ class LookupEngine:
         *,
         resource_type: str,
         relation: str,
-    ) -> dict[tuple[str, str], int]:
-        dependencies: dict[tuple[str, str], int] = {}
-        for child_relation, cost in self._rewrite_dependencies(
+    ) -> tuple[tuple[tuple[str, str], int, str | None], ...]:
+        dependencies = self._rewrite_dependencies(
             self._model.resolve(resource_type, relation),
+            resource_type=resource_type,
             cost=0,
-        ).items():
-            child_ref = (resource_type, child_relation)
-            existing_cost = dependencies.get(child_ref)
-            if existing_cost is None or cost < existing_cost:
-                dependencies[child_ref] = cost
-        return dependencies
+        )
+        return tuple(
+            (child_ref, cost, tuple_relation)
+            for (child_ref, tuple_relation), cost in dependencies.items()
+        )
 
     def _rewrite_dependencies(
         self,
         rewrite: RewriteRule,
         *,
+        resource_type: str,
         cost: int,
-    ) -> dict[str, int]:
+    ) -> dict[tuple[tuple[str, str], str | None], int]:
         if isinstance(rewrite, ComputedUsersetRule):
-            return {rewrite.relation: cost + 1}
+            return {((resource_type, rewrite.relation), None): cost + 1}
+
+        if isinstance(rewrite, TupleToUsersetRule):
+            return {
+                ((target_type, rewrite.computed_relation), rewrite.tuple_relation): (
+                    cost + 1
+                )
+                for target_type in self._model.tuple_to_userset_target_types(
+                    resource_type=resource_type,
+                    tuple_relation=rewrite.tuple_relation,
+                )
+            }
 
         if isinstance(rewrite, (UnionRule, IntersectionRule)):
-            dependencies: dict[str, int] = {}
+            dependencies: dict[tuple[tuple[str, str], str | None], int] = {}
             for child in rewrite.children:
-                for relation, child_cost in self._rewrite_dependencies(
-                    child,
-                    cost=cost + 1,
-                ).items():
-                    existing_cost = dependencies.get(relation)
-                    if existing_cost is None or child_cost < existing_cost:
-                        dependencies[relation] = child_cost
+                self._merge_dependency_costs(
+                    dependencies,
+                    self._rewrite_dependencies(
+                        child,
+                        resource_type=resource_type,
+                        cost=cost + 1,
+                    ),
+                )
             return dependencies
 
         if isinstance(rewrite, ExclusionRule):
-            return self._rewrite_dependencies(rewrite.base, cost=cost + 1)
+            return self._rewrite_dependencies(
+                rewrite.base,
+                resource_type=resource_type,
+                cost=cost + 1,
+            )
 
         return {}
+
+    @staticmethod
+    def _merge_dependency_costs(
+        target: dict[tuple[tuple[str, str], str | None], int],
+        source: dict[tuple[tuple[str, str], str | None], int],
+    ) -> None:
+        for dependency, cost in source.items():
+            existing_cost = target.get(dependency)
+            if existing_cost is None or cost < existing_cost:
+                target[dependency] = cost
 
     def _userset_semantically_reachable(
         self,
