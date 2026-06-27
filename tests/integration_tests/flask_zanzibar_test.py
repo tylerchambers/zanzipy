@@ -16,7 +16,9 @@ from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
-from zanzipy.storage.revision import TupleMutation
+from zanzipy.storage.revision import TenantId, TupleMutation, WriteContext
+
+DEFAULT_TENANT = TenantId("default")
 
 
 def _make_registry() -> SchemaRegistry:
@@ -64,6 +66,19 @@ class TestFlaskZanzibarExtension:
             ext = app.extensions.get("zanzibar")
             assert isinstance(ext, Zanzibar)
             assert isinstance(ext.client, ZanzibarClient)
+
+    def test_configured_tenant_is_passed_to_client(self) -> None:
+        app = Flask("tenant-config")
+        app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(registry=_make_registry())
+        app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        app.config["ZANZIBAR_TENANT"] = "acme"
+
+        ext = Zanzibar()
+        ext.init_app(app)
+
+        with app.app_context():
+            assert ext.client is not None
+            assert ext.client.tenant == TenantId("acme")
 
     def test_write_and_check_via_proxy(self) -> None:
         app = self._create_app()
@@ -122,11 +137,12 @@ class TestFlaskZanzibarExtension:
             ext = app.extensions["zanzibar"]
             repo = ext.client.relations_repository  # type: ignore[assignment]
             repo.write(
+                WriteContext(DEFAULT_TENANT),
                 (
                     TupleMutation.touch(
                         RelationTuple.from_string("document:doc1#owner@user:alice")
                     ),
-                )
+                ),
             )
 
         res = client.get("/mixins/doc1/alice")

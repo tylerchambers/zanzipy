@@ -14,7 +14,9 @@ from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
-from zanzipy.storage.revision import TupleMutation
+from zanzipy.storage.revision import TenantId, TupleMutation, WriteContext
+
+DEFAULT_TENANT = TenantId("default")
 
 
 def _registry() -> SchemaRegistry:
@@ -148,7 +150,8 @@ class TestAuthorizableResourceDecorator:
 
         # Seed tuple directly
         repo.write(
-            (TupleMutation.touch(RelationTuple.from_string("doc:1#owner@user:alice")),)
+            WriteContext(DEFAULT_TENANT),
+            (TupleMutation.touch(RelationTuple.from_string("doc:1#owner@user:alice")),),
         )
 
         perms = d.get_permissions(alice)  # type: ignore[attr-defined]

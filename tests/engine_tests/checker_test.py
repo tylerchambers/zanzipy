@@ -18,7 +18,13 @@ from zanzipy.schema.types import SchemaDefinitionType
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
-from zanzipy.storage.revision import TupleMutation
+from zanzipy.storage.revision import ReadContext, TenantId, TupleMutation, WriteContext
+
+DEFAULT_TENANT = TenantId("default")
+
+
+def _context(repo: InMemoryRelationRepository) -> ReadContext:
+    return ReadContext(DEFAULT_TENANT, repo.head_revision(DEFAULT_TENANT))
 
 
 class TestCheckEngine:
@@ -38,23 +44,24 @@ class TestCheckEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc1#owner@user:alice")
                 ),
-            )
+            ),
         )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
         # Positive
         req = CheckRequest.from_strings("document:doc1", "owner", "user:alice")
-        res = engine.check(req)
+        res = engine.check(req, context=_context(repo))
         assert res.allowed is True
 
         # Negative
         req = CheckRequest.from_strings("document:doc1", "owner", "user:bob")
-        res = engine.check(req)
+        res = engine.check(req, context=_context(repo))
         assert res.allowed is False
 
     def test_computed_userset_union(self) -> None:
@@ -89,37 +96,39 @@ class TestCheckEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc1#owner@user:alice")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc2#editor@user:carol")
                 ),
-            )
+            ),
         )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
         # Viewer via owner
         req = CheckRequest.from_strings("document:doc1", "viewer", "user:alice")
-        assert engine.check(req).allowed is True
+        assert engine.check(req, context=_context(repo)).allowed is True
 
         # Viewer via editor
         req = CheckRequest.from_strings("document:doc2", "viewer", "user:carol")
-        assert engine.check(req).allowed is True
+        assert engine.check(req, context=_context(repo)).allowed is True
 
         # Permission can_view delegates to viewer
         req = CheckRequest.from_strings("document:doc1", "can_view", "user:alice")
-        assert engine.check(req).allowed is True
+        assert engine.check(req, context=_context(repo)).allowed is True
 
         # Negative
         req = CheckRequest.from_strings("document:doc2", "viewer", "user:alice")
-        assert engine.check(req).allowed is False
+        assert engine.check(req, context=_context(repo)).allowed is False
 
     def test_intersection_and_exclusion(self) -> None:
         registry = SchemaRegistry()
@@ -167,56 +176,61 @@ class TestCheckEngine:
         repo = InMemoryRelationRepository()
         # alice is both owner and editor of doc1 -> can_edit
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc1#owner@user:alice")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc1#editor@user:alice")
                 ),
-            )
+            ),
         )
         # bob is only viewer of doc2 -> can_comment unless banned
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc2#viewer@user:bob")
                 ),
-            )
+            ),
         )
         # carol viewer and banned on doc3 -> cannot comment
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc3#viewer@user:carol")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc3#banned@user:carol")
                 ),
-            )
+            ),
         )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
         # Intersection
         req = CheckRequest.from_strings("document:doc1", "can_edit", "user:alice")
-        assert engine.check(req).allowed is True
+        assert engine.check(req, context=_context(repo)).allowed is True
         req = CheckRequest.from_strings("document:doc1", "can_edit", "user:bob")
-        assert engine.check(req).allowed is False
+        assert engine.check(req, context=_context(repo)).allowed is False
 
         # Exclusion
         req = CheckRequest.from_strings("document:doc2", "can_comment", "user:bob")
-        assert engine.check(req).allowed is True
+        assert engine.check(req, context=_context(repo)).allowed is True
         req = CheckRequest.from_strings("document:doc3", "can_comment", "user:carol")
-        assert engine.check(req).allowed is False
+        assert engine.check(req, context=_context(repo)).allowed is False
 
     def test_reused_relation_operand_is_path_local(self) -> None:
         registry = SchemaRegistry()
@@ -251,22 +265,23 @@ class TestCheckEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#owner@user:alice")
                 ),
-            )
+            ),
         )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
         req = CheckRequest.from_strings("document:doc", "owner_twice", "user:alice")
-        assert engine.check(req).allowed is True
+        assert engine.check(req, context=_context(repo)).allowed is True
 
         req = CheckRequest.from_strings(
             "document:doc", "owner_minus_owner", "user:alice"
         )
-        assert engine.check(req).allowed is False
+        assert engine.check(req, context=_context(repo)).allowed is False
 
     def test_tuple_to_userset(self) -> None:
         registry = SchemaRegistry()
@@ -312,27 +327,29 @@ class TestCheckEngine:
         repo = InMemoryRelationRepository()
         # doc1 -> parent folder f1; folder f1 -> viewer alice
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc1#parent@folder:f1")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("folder:f1#viewer@user:alice")
                 ),
-            )
+            ),
         )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
         req = CheckRequest.from_strings("document:doc1", "can_view", "user:alice")
-        assert engine.check(req).allowed is True
+        assert engine.check(req, context=_context(repo)).allowed is True
 
         req = CheckRequest.from_strings("document:doc1", "can_view", "user:bob")
-        assert engine.check(req).allowed is False
+        assert engine.check(req, context=_context(repo)).allowed is False
 
     def test_unknown_namespace_and_relation_errors(self) -> None:
         registry = SchemaRegistry()
@@ -357,7 +374,8 @@ class TestCheckEngine:
 
         # Unknown relation in known namespace
         res = engine.check(
-            CheckRequest.from_strings("document:doc1", "missing", "user:alice")
+            CheckRequest.from_strings("document:doc1", "missing", "user:alice"),
+            context=_context(repo),
         )
         assert res.allowed is False
         assert res.debug_trace is not None
@@ -365,7 +383,8 @@ class TestCheckEngine:
 
         # Unknown namespace
         res = engine.check(
-            CheckRequest.from_strings("nope:doc1", "viewer", "user:alice")
+            CheckRequest.from_strings("nope:doc1", "viewer", "user:alice"),
+            context=_context(repo),
         )
         assert res.allowed is False
         assert res.debug_trace is not None
@@ -395,14 +414,16 @@ class TestCheckEngine:
             raising=False,
         )
 
+        repo = InMemoryRelationRepository()
         engine = CheckEngine(
-            relations_repository=InMemoryRelationRepository(),
+            relations_repository=repo,
             schema=registry,
             enable_debug=True,
         )
 
         res = engine.check(
-            CheckRequest.from_strings("document:doc1", "can_x", "user:alice")
+            CheckRequest.from_strings("document:doc1", "can_x", "user:alice"),
+            context=_context(repo),
         )
         assert res.allowed is False
         assert res.debug_trace is not None
@@ -424,14 +445,16 @@ class TestCheckEngine:
             raising=False,
         )
 
+        repo = InMemoryRelationRepository()
         engine = CheckEngine(
-            relations_repository=InMemoryRelationRepository(),
+            relations_repository=repo,
             schema=registry,
             enable_debug=True,
         )
 
         res = engine.check(
-            CheckRequest.from_strings("document:doc1", "perm", "user:alice")
+            CheckRequest.from_strings("document:doc1", "perm", "user:alice"),
+            context=_context(repo),
         )
         assert res.allowed is False
         assert res.debug_trace is not None
@@ -465,15 +488,17 @@ class TestCheckEngine:
             )
         )
 
+        repo = InMemoryRelationRepository()
         engine = CheckEngine(
-            relations_repository=InMemoryRelationRepository(),
+            relations_repository=repo,
             schema=registry,
             max_depth=3,
             enable_debug=True,
         )
 
         res = engine.check(
-            CheckRequest.from_strings("document:doc1", "r0", "user:alice")
+            CheckRequest.from_strings("document:doc1", "r0", "user:alice"),
+            context=_context(repo),
         )
         assert res.allowed is False
         assert res.debug_trace is not None
@@ -500,13 +525,17 @@ class TestCheckEngine:
         )
         registry.register(ns)
 
+        repo = InMemoryRelationRepository()
         engine = CheckEngine(
-            relations_repository=InMemoryRelationRepository(),
+            relations_repository=repo,
             schema=registry,
             enable_debug=True,
         )
 
-        res = engine.check(CheckRequest.from_strings("document:doc", "a", "user:alice"))
+        res = engine.check(
+            CheckRequest.from_strings("document:doc", "a", "user:alice"),
+            context=_context(repo),
+        )
         # No tuples -> should terminate and return False rather than infinite loop
         assert res.allowed is False
         assert res.debug_trace is not None
@@ -564,7 +593,7 @@ class TestCheckEngine:
         req = CheckRequest.from_strings("doc:1", "view", "user:alice")
 
         # First call: miss -> set stored with RewriteRule
-        engine.check(req)
+        engine.check(req, context=_context(repo))
         assert cache.get_calls[0] == ("doc", "view")
         ns_name, rel_name, compiled = cache.set_calls[0]
         assert (ns_name, rel_name) == ("doc", "view")
@@ -572,7 +601,7 @@ class TestCheckEngine:
 
         # Second call: hit -> no additional set
         before = len(cache.set_calls)
-        engine.check(req)
+        engine.check(req, context=_context(repo))
         assert len(cache.set_calls) == before
 
     def test_compiled_cache_refreshes_after_schema_update(self) -> None:
@@ -595,7 +624,12 @@ class TestCheckEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
-            (TupleMutation.touch(RelationTuple.from_string("doc:1#viewer@user:alice")),)
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("doc:1#viewer@user:alice")
+                ),
+            ),
         )
 
         from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
@@ -628,7 +662,7 @@ class TestCheckEngine:
         )
         req = CheckRequest.from_strings("doc:1", "view", "user:alice")
 
-        assert engine.check(req).allowed is True
+        assert engine.check(req, context=_context(repo)).allowed is True
 
         registry.update_namespace(
             NamespaceDef(
@@ -640,7 +674,7 @@ class TestCheckEngine:
             )
         )
 
-        assert engine.check(req).allowed is False
+        assert engine.check(req, context=_context(repo)).allowed is False
         view_sets = [call for call in cache.set_calls if call[:2] == ("doc", "view")]
         assert len(view_sets) == 2
         _, _, refreshed = view_sets[-1]

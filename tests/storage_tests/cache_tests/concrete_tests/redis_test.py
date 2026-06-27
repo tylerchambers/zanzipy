@@ -7,7 +7,14 @@ from zanzipy.storage.cache.concrete.redis import (
     RedisTupleCodec,
 )
 from zanzipy.storage.common import RedisLike
-from zanzipy.storage.revision import Revision
+from zanzipy.storage.revision import ReadContext, Revision, TenantId
+
+DEFAULT_TENANT = TenantId("default")
+ALT_TENANT = TenantId("alt")
+
+
+def _ctx(value: int, tenant: TenantId = DEFAULT_TENANT) -> ReadContext:
+    return ReadContext(tenant, Revision(value))
 
 
 def _rt(s: str) -> RelationTuple:
@@ -15,23 +22,24 @@ def _rt(s: str) -> RelationTuple:
 
 
 class TestDefaultRedisTupleCodec:
-    def test_keys_include_revision_and_json_roundtrip(self) -> None:
+    def test_keys_include_tenant_revision_and_json_roundtrip(self) -> None:
         codec = DefaultRedisTupleCodec(prefix="test:rt")
         obj = Obj.from_string("doc:123")
         subj_direct = Subject.from_string("user:alice")
         subj_anchor = Subject.from_string("group:eng#member")
-        revision = Revision(7)
+        context = _ctx(7)
 
         assert (
-            codec.key_for_object(obj, revision=revision) == "test:rt:obj:doc:123:rev:7"
+            codec.key_for_object(obj, context=context)
+            == "test:rt:tenant:default:obj:doc:123:rev:7"
         )
         assert (
-            codec.key_for_subject(subj_direct, revision=revision)
-            == "test:rt:subj:user:alice:-:rev:7"
+            codec.key_for_subject(subj_direct, context=context)
+            == "test:rt:tenant:default:subj:user:alice:-:rev:7"
         )
         assert (
-            codec.key_for_subject(subj_anchor, revision=revision)
-            == "test:rt:subj:group:eng:member:rev:7"
+            codec.key_for_subject(subj_anchor, context=context)
+            == "test:rt:tenant:default:subj:group:eng:member:rev:7"
         )
 
         tuples = [_rt("doc:123#viewer@user:alice"), _rt("doc:123#editor@user:bob")]
@@ -84,14 +92,20 @@ class _TrackingCodec(RedisTupleCodec):
         self.encoded: list[list[str]] = []
         self.decoded_payloads: list[bytes | str] = []
 
-    def key_for_object(self, obj: Obj, *, revision: Revision) -> str:
-        key = f"k:obj:{obj.namespace}:{obj.id}:rev:{revision.value}"
+    def key_for_object(self, obj: Obj, *, context: ReadContext) -> str:
+        key = (
+            f"k:tenant:{context.tenant}:obj:{obj.namespace}:{obj.id}:"
+            f"rev:{context.revision.value}"
+        )
         self.keys.append(key)
         return key
 
-    def key_for_subject(self, subject: Subject, *, revision: Revision) -> str:
+    def key_for_subject(self, subject: Subject, *, context: ReadContext) -> str:
         rel = "-" if subject.relation is None else str(subject.relation)
-        key = f"k:subj:{subject.namespace}:{subject.id}:{rel}:rev:{revision.value}"
+        key = (
+            f"k:tenant:{context.tenant}:subj:{subject.namespace}:"
+            f"{subject.id}:{rel}:rev:{context.revision.value}"
+        )
         self.keys.append(key)
         return key
 
@@ -107,7 +121,7 @@ class _TrackingCodec(RedisTupleCodec):
 
 
 class TestRedisTupleCache:
-    def test_revision_scoped_read_write_roundtrip(self) -> None:
+    def test_tenant_and_revision_scoped_read_write_roundtrip(self) -> None:
         fake = _FakeRedis()
         codec = _TrackingCodec()
         cache = RedisTupleCache(client=fake, ttl_seconds=10, codec=codec)
@@ -118,21 +132,48 @@ class TestRedisTupleCache:
             _rt("doc:1#viewer@user:alice"),
             _rt("doc:1#editor@user:bob"),
         ]
+        ctx1 = _ctx(1)
+        ctx2 = _ctx(2)
+        other_tenant_ctx = _ctx(1, ALT_TENANT)
 
-        assert cache.get_by_object(obj, revision=Revision(1)) is None
-        assert cache.get_by_subject(subj, revision=Revision(1)) is None
+        assert cache.get_by_object(obj, context=ctx1) is None
+        assert cache.get_by_subject(subj, context=ctx1) is None
 
-        cache.set_by_object(obj, revision=Revision(1), tuples=tuples)
-        ob = cache.get_by_object(obj, revision=Revision(1))
+        cache.set_by_object(obj, context=ctx1, tuples=tuples)
+        ob = cache.get_by_object(obj, context=ctx1)
         assert ob is not None
         assert [str(t) for t in ob] == [str(t) for t in tuples]
-        assert cache.get_by_object(obj, revision=Revision(2)) is None
+        assert cache.get_by_object(obj, context=ctx2) is None
+        assert cache.get_by_object(obj, context=other_tenant_ctx) is None
 
-        cache.set_by_subject(subj, revision=Revision(1), tuples=tuples)
-        sb = cache.get_by_subject(subj, revision=Revision(1))
+        cache.set_by_subject(subj, context=ctx1, tuples=tuples)
+        sb = cache.get_by_subject(subj, context=ctx1)
         assert sb is not None
         assert [str(t) for t in sb] == [str(t) for t in tuples]
-        assert cache.get_by_subject(subj, revision=Revision(2)) is None
+        assert cache.get_by_subject(subj, context=ctx2) is None
+        assert cache.get_by_subject(subj, context=other_tenant_ctx) is None
+
+        alt_object_tuples = [_rt("doc:1#viewer@user:mallory")]
+        alt_subject_tuples = [_rt("doc:alt#viewer@user:alice")]
+        cache.set_by_object(obj, context=other_tenant_ctx, tuples=alt_object_tuples)
+        cache.set_by_subject(subj, context=other_tenant_ctx, tuples=alt_subject_tuples)
+        assert [str(t) for t in cache.get_by_object(obj, context=ctx1) or ()] == [
+            str(t) for t in tuples
+        ]
+        assert [
+            str(t) for t in cache.get_by_object(obj, context=other_tenant_ctx) or ()
+        ] == [str(t) for t in alt_object_tuples]
+        assert [str(t) for t in cache.get_by_subject(subj, context=ctx1) or ()] == [
+            str(t) for t in tuples
+        ]
+        assert [
+            str(t) for t in cache.get_by_subject(subj, context=other_tenant_ctx) or ()
+        ] == [str(t) for t in alt_subject_tuples]
+
+        assert "k:tenant:default:obj:doc:1:rev:1" in codec.keys
+        assert "k:tenant:default:subj:user:alice:-:rev:1" in codec.keys
+        assert "k:tenant:alt:obj:doc:1:rev:1" in codec.keys
+        assert "k:tenant:alt:subj:user:alice:-:rev:1" in codec.keys
 
         assert cache.ping() is True
         cache.close()
@@ -144,24 +185,24 @@ class TestRedisTupleCache:
         assert len(codec.keys) > 0
         assert len(codec.encoded) > 0
 
-    def test_corrupted_payload_clears_revision_key(self) -> None:
+    def test_corrupted_payload_clears_context_key(self) -> None:
         fake = _FakeRedis()
         codec = DefaultRedisTupleCodec(prefix="t:rt")
         cache = RedisTupleCache(client=fake, ttl_seconds=5, codec=codec)
 
         obj = Obj.from_string("doc:oops")
         subj = Subject.from_string("user:oops")
-        revision = Revision(3)
+        context = _ctx(3)
 
-        obj_key = codec.key_for_object(obj, revision=revision)
+        obj_key = codec.key_for_object(obj, context=context)
         fake._store[obj_key] = b"not-json"
-        res_obj = cache.get_by_object(obj, revision=revision)
+        res_obj = cache.get_by_object(obj, context=context)
         assert res_obj is None
         assert obj_key not in fake._store
 
-        subj_key = codec.key_for_subject(subj, revision=revision)
+        subj_key = codec.key_for_subject(subj, context=context)
         fake._store[subj_key] = b'["bad-tuple-format"]'
-        res_subj = cache.get_by_subject(subj, revision=revision)
+        res_subj = cache.get_by_subject(subj, context=context)
         assert res_subj is None
         assert subj_key not in fake._store
 
@@ -171,8 +212,9 @@ class TestRedisTupleCache:
         obj = Obj.from_string("doc:ttl")
         subj = Subject.from_string("user:ttl")
         tuples = [_rt("doc:ttl#viewer@user:ttl")]
-        cache1.set_by_object(obj, revision=Revision(1), tuples=tuples)
-        cache1.set_by_subject(subj, revision=Revision(1), tuples=tuples)
+        context = _ctx(1)
+        cache1.set_by_object(obj, context=context, tuples=tuples)
+        cache1.set_by_subject(subj, context=context, tuples=tuples)
         set_calls_ex = [
             kwargs.get("ex") for name, _args, kwargs in fake1.calls if name == "set"
         ]
@@ -180,8 +222,8 @@ class TestRedisTupleCache:
 
         fake2 = _FakeRedis()
         cache2 = RedisTupleCache(client=fake2, ttl_seconds=None)
-        cache2.set_by_object(obj, revision=Revision(1), tuples=tuples)
-        cache2.set_by_subject(subj, revision=Revision(1), tuples=tuples)
+        cache2.set_by_object(obj, context=context, tuples=tuples)
+        cache2.set_by_subject(subj, context=context, tuples=tuples)
         set_calls_ex2 = [
             kwargs.get("ex") for name, _args, kwargs in fake2.calls if name == "set"
         ]

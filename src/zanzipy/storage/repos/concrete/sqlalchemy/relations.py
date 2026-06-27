@@ -1,4 +1,4 @@
-"""SQLAlchemy-backed revisioned relation tuple repository."""
+"""SQLAlchemy-backed tenant-scoped revisioned relation tuple repository."""
 
 from collections.abc import Callable  # noqa: TC003
 from importlib import import_module
@@ -12,10 +12,14 @@ from zanzipy.storage.repos.concrete._rows import (
     stored_tuple_values,
 )
 from zanzipy.storage.revision import (
+    ReadContext,
     RelationshipChange,
     RelationshipOperation,
     Revision,
+    RevisionToken,
+    TenantId,
     TupleMutation,
+    WriteContext,
     WriteResult,
 )
 
@@ -32,7 +36,7 @@ _REVISIONS_TABLE_NAME = "revisions"
 
 
 class SQLAlchemyRelationRepository(RelationRepository):
-    """SQLAlchemy repository using created/deleted revisions for tuple visibility."""
+    """SQLAlchemy repository using tenant-scoped created/deleted revisions."""
 
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         """Import SQLAlchemy and define relation table metadata.
@@ -54,12 +58,8 @@ class SQLAlchemyRelationRepository(RelationRepository):
         self._revisions = self._sa.Table(
             _REVISIONS_TABLE_NAME,
             self._metadata,
-            self._sa.Column(
-                "revision",
-                revision_type,
-                primary_key=True,
-                autoincrement=True,
-            ),
+            self._sa.Column("tenant_id", self._sa.String, primary_key=True),
+            self._sa.Column("revision", revision_type, primary_key=True),
             self._sa.Column(
                 "created_at",
                 self._sa.DateTime,
@@ -70,6 +70,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
         self._table = self._sa.Table(
             _TABLE_NAME,
             self._metadata,
+            self._sa.Column("tenant_id", self._sa.String, primary_key=True),
             self._sa.Column("tuple_key", self._sa.String, primary_key=True),
             self._sa.Column("object_ns", self._sa.String, nullable=False),
             self._sa.Column("object_id", self._sa.String, nullable=False),
@@ -77,20 +78,33 @@ class SQLAlchemyRelationRepository(RelationRepository):
             self._sa.Column("subject_ns", self._sa.String, nullable=False),
             self._sa.Column("subject_id", self._sa.String, nullable=False),
             self._sa.Column("subject_rel", self._sa.String, nullable=False),
-            self._sa.Column(
-                "created_revision",
-                revision_type,
-                self._sa.ForeignKey(f"{_REVISIONS_TABLE_NAME}.revision"),
-                primary_key=True,
+            self._sa.Column("created_revision", revision_type, primary_key=True),
+            self._sa.Column("deleted_revision", revision_type, nullable=True),
+            self._sa.ForeignKeyConstraint(
+                ("tenant_id", "created_revision"),
+                (
+                    f"{_REVISIONS_TABLE_NAME}.tenant_id",
+                    f"{_REVISIONS_TABLE_NAME}.revision",
+                ),
             ),
-            self._sa.Column(
-                "deleted_revision",
-                revision_type,
-                self._sa.ForeignKey(f"{_REVISIONS_TABLE_NAME}.revision"),
-                nullable=True,
+            self._sa.ForeignKeyConstraint(
+                ("tenant_id", "deleted_revision"),
+                (
+                    f"{_REVISIONS_TABLE_NAME}.tenant_id",
+                    f"{_REVISIONS_TABLE_NAME}.revision",
+                ),
+            ),
+            self._sa.Index(
+                "idx_rt_active_unique",
+                "tenant_id",
+                "tuple_key",
+                unique=True,
+                sqlite_where=self._sa.text("deleted_revision IS NULL"),
+                postgresql_where=self._sa.text("deleted_revision IS NULL"),
             ),
             self._sa.Index(
                 "idx_rt_forward",
+                "tenant_id",
                 "object_ns",
                 "object_id",
                 "relation",
@@ -100,6 +114,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
             ),
             self._sa.Index(
                 "idx_rt_reverse",
+                "tenant_id",
                 "subject_ns",
                 "subject_id",
                 "subject_rel",
@@ -109,16 +124,10 @@ class SQLAlchemyRelationRepository(RelationRepository):
             ),
             self._sa.Index(
                 "idx_rt_object_type_relation",
+                "tenant_id",
                 "object_ns",
                 "relation",
                 "object_id",
-            ),
-            self._sa.Index(
-                "idx_rt_active_unique",
-                "tuple_key",
-                unique=True,
-                sqlite_where=self._sa.text("deleted_revision IS NULL"),
-                postgresql_where=self._sa.text("deleted_revision IS NULL"),
             ),
         )
 
@@ -127,65 +136,106 @@ class SQLAlchemyRelationRepository(RelationRepository):
 
         self._metadata.create_all(bind=bind)
 
-    def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
-        """Persist idempotent mutations atomically using a short-lived session.
+    def write(
+        self,
+        context: WriteContext,
+        mutations: Iterable[TupleMutation],
+    ) -> WriteResult:
+        """Persist idempotent tenant mutations atomically in one revision.
+
+        Transient same-tenant revision allocation conflicts are retried so
+        concurrent writers receive distinct tenant-local revisions when the
+        database surfaces a primary-key or serialization conflict.
 
         Raises:
             ValueError: If a mutation contains an unknown operation.
         """
-        session = self._session_factory()
-        revision: Revision | None = None
-        changes: list[tuple[RelationTuple, RelationshipOperation]] = []
-        try:
-            for mutation in mutations:
-                if mutation.operation is RelationshipOperation.WRITE:
-                    if self._active_tuple(session, mutation.relation_tuple) is not None:
-                        continue
-                    revision = self._ensure_write_revision(session, revision)
-                    session.execute(
-                        self._table.insert().values(
-                            **stored_tuple_values(
+        retry_errors = (self._sa.exc.IntegrityError, self._sa.exc.OperationalError)
+        mutations = tuple(mutations)
+        for attempt in range(3):
+            session = self._session_factory()
+            revision: Revision | None = None
+            try:
+                for mutation in mutations:
+                    if mutation.operation is RelationshipOperation.WRITE:
+                        if (
+                            self._active_tuple(
+                                session,
+                                context.tenant,
                                 mutation.relation_tuple,
-                                created_revision=revision.value,
+                            )
+                            is not None
+                        ):
+                            continue
+                        revision = self._ensure_write_revision(
+                            session,
+                            context.tenant,
+                            revision,
+                        )
+                        session.execute(
+                            self._table.insert().values(
+                                **stored_tuple_values(
+                                    mutation.relation_tuple,
+                                    tenant_id=str(context.tenant),
+                                    created_revision=revision.value,
+                                )
                             )
                         )
-                    )
-                    changes.append((mutation.relation_tuple, mutation.operation))
-                    continue
-
-                if mutation.operation is RelationshipOperation.DELETE:
-                    active = self._active_tuple(session, mutation.relation_tuple)
-                    if active is None:
                         continue
-                    revision = self._ensure_write_revision(session, revision)
-                    session.execute(
-                        self._table.update()
-                        .where(self._table.c.tuple_key == str(mutation.relation_tuple))
-                        .where(self._table.c.deleted_revision.is_(None))
-                        .values(deleted_revision=revision.value)
+
+                    if mutation.operation is RelationshipOperation.DELETE:
+                        active = self._active_tuple(
+                            session,
+                            context.tenant,
+                            mutation.relation_tuple,
+                        )
+                        if active is None:
+                            continue
+                        revision = self._ensure_write_revision(
+                            session,
+                            context.tenant,
+                            revision,
+                        )
+                        session.execute(
+                            self._table.update()
+                            .where(self._table.c.tenant_id == str(context.tenant))
+                            .where(
+                                self._table.c.tuple_key == str(mutation.relation_tuple)
+                            )
+                            .where(self._table.c.deleted_revision.is_(None))
+                            .values(deleted_revision=revision.value)
+                        )
+                        continue
+
+                    raise ValueError(
+                        f"unknown tuple mutation operation: {mutation.operation}"
                     )
-                    changes.append((active, mutation.operation))
-                    continue
-
-                raise ValueError(
-                    f"unknown tuple mutation operation: {mutation.operation}"
-                )
-            if revision is None:
+                if revision is None:
+                    session.rollback()
+                    return WriteResult(
+                        RevisionToken(
+                            context.tenant,
+                            self.head_revision(context.tenant),
+                        )
+                    )
+                session.commit()
+                return WriteResult(RevisionToken(context.tenant, revision))
+            except retry_errors:
                 session.rollback()
-                return WriteResult(self.head_revision())
-            session.commit()
-            return WriteResult(revision)
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+                if attempt == 2:
+                    raise
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+        raise RuntimeError("failed to allocate tenant revision")
 
-    def head_revision(self) -> Revision:
-        """Return the greatest committed revision visible through a session."""
+    def head_revision(self, tenant: TenantId) -> Revision:
+        """Return the greatest committed revision visible for ``tenant``."""
         session = self._session_factory()
         try:
-            return self._head_revision(session)
+            return self._head_revision(session, tenant)
         finally:
             session.close()
 
@@ -193,21 +243,22 @@ class SQLAlchemyRelationRepository(RelationRepository):
         self,
         key: RelationTuple,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> RelationTuple | None:
-        """Return ``key`` when its visibility window includes ``revision``.
+        """Return ``key`` when its tenant visibility window includes context.
 
         Raises:
-            ValueError: If ``revision`` is newer than the head revision.
+            ValueError: If ``context.revision`` is newer than the tenant head.
         """
-        self._raise_if_future_revision(revision)
+        self._raise_if_future_revision(context)
         session = self._session_factory()
         try:
             row = (
                 session.execute(
                     self._sa.select(self._table)
+                    .where(self._table.c.tenant_id == str(context.tenant))
                     .where(self._table.c.tuple_key == str(key))
-                    .where(self._visible_at(revision))
+                    .where(self._visible_at(context))
                 )
                 .mappings()
                 .fetchone()
@@ -222,35 +273,40 @@ class SQLAlchemyRelationRepository(RelationRepository):
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return tuples visible at ``revision`` that match ``filter``.
+        """Return tuples visible in ``context`` that match ``filter``.
 
         Raises:
-            ValueError: If ``revision`` is newer than the head revision.
+            ValueError: If ``context.revision`` is newer than the tenant head.
         """
-        return self._select(filter, revision=revision)
+        return self._select(filter, context=context)
 
     def read_reverse(
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return reverse-filtered tuples visible at ``revision``.
+        """Return reverse-filtered tuples visible in ``context``.
 
         Raises:
-            ValueError: If ``revision`` is newer than the head revision.
+            ValueError: If ``context.revision`` is newer than the tenant head.
         """
-        return self._select(filter, revision=revision)
+        return self._select(filter, context=context)
 
-    def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
-        """Yield writes and deletes committed after ``after`` by revision order.
+    def watch(
+        self,
+        tenant: TenantId,
+        *,
+        after: Revision,
+    ) -> Iterator[RelationshipChange]:
+        """Yield ``tenant`` writes and deletes committed after ``after``.
 
         Raises:
-            ValueError: If ``after`` is newer than the head revision.
+            ValueError: If ``after`` is newer than the tenant head revision.
         """
-        self._raise_if_future_revision(after)
+        self._raise_if_future_revision(ReadContext(tenant, after))
         session = self._session_factory()
         try:
             created = (
@@ -258,7 +314,9 @@ class SQLAlchemyRelationRepository(RelationRepository):
                     self._sa.select(
                         self._table,
                         self._table.c.created_revision.label("change_revision"),
-                    ).where(self._table.c.created_revision > after.value)
+                    )
+                    .where(self._table.c.tenant_id == str(tenant))
+                    .where(self._table.c.created_revision > after.value)
                 )
                 .mappings()
                 .all()
@@ -269,6 +327,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
                         self._table,
                         self._table.c.deleted_revision.label("change_revision"),
                     )
+                    .where(self._table.c.tenant_id == str(tenant))
                     .where(self._table.c.deleted_revision.is_not(None))
                     .where(self._table.c.deleted_revision > after.value)
                 )
@@ -279,7 +338,9 @@ class SQLAlchemyRelationRepository(RelationRepository):
                 (
                     int(row["change_revision"]),
                     RelationshipChange(
-                        revision=Revision(int(row["change_revision"])),
+                        token=RevisionToken(
+                            tenant, Revision(int(row["change_revision"]))
+                        ),
                         relation_tuple=StoredRelationTuple.from_mapping(row).to_tuple(),
                         operation=RelationshipOperation.WRITE,
                     ),
@@ -290,7 +351,9 @@ class SQLAlchemyRelationRepository(RelationRepository):
                 (
                     int(row["change_revision"]),
                     RelationshipChange(
-                        revision=Revision(int(row["change_revision"])),
+                        token=RevisionToken(
+                            tenant, Revision(int(row["change_revision"]))
+                        ),
                         relation_tuple=StoredRelationTuple.from_mapping(row).to_tuple(),
                         operation=RelationshipOperation.DELETE,
                     ),
@@ -304,11 +367,27 @@ class SQLAlchemyRelationRepository(RelationRepository):
 
     def info(self) -> dict[str, object]:
         """Return SQLAlchemy backend diagnostics, table names, and columns."""
+        session = self._session_factory()
+        try:
+            rows = (
+                session.execute(
+                    self._sa.select(
+                        self._revisions.c.tenant_id,
+                        self._sa.func.max(self._revisions.c.revision).label("revision"),
+                    ).group_by(self._revisions.c.tenant_id)
+                )
+                .mappings()
+                .all()
+            )
+        finally:
+            session.close()
         return {
             "backend": "sqlalchemy",
             "table": _TABLE_NAME,
             "revisions_table": _REVISIONS_TABLE_NAME,
-            "head_revision": self.head_revision().value,
+            "head_revisions": {
+                str(row["tenant_id"]): int(row["revision"]) for row in rows
+            },
             "columns": RELATION_TUPLE_COLUMNS,
         }
 
@@ -316,12 +395,12 @@ class SQLAlchemyRelationRepository(RelationRepository):
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> list[RelationTuple]:
-        self._raise_if_future_revision(revision)
+        self._raise_if_future_revision(context)
         session = self._session_factory()
         try:
-            stmt = self._sa.select(self._table).where(self._visible_at(revision))
+            stmt = self._sa.select(self._table).where(self._visible_at(context))
             conditions = [
                 self._table.c[column] == value
                 for column, value in filter_values(filter)
@@ -340,11 +419,13 @@ class SQLAlchemyRelationRepository(RelationRepository):
     def _active_tuple(
         self,
         session: Session,
+        tenant: TenantId,
         key: RelationTuple,
     ) -> RelationTuple | None:
         row = (
             session.execute(
                 self._sa.select(self._table)
+                .where(self._table.c.tenant_id == str(tenant))
                 .where(self._table.c.tuple_key == str(key))
                 .where(self._table.c.deleted_revision.is_(None))
             )
@@ -358,33 +439,57 @@ class SQLAlchemyRelationRepository(RelationRepository):
     def _ensure_write_revision(
         self,
         session: Session,
+        tenant: TenantId,
         revision: Revision | None,
     ) -> Revision:
         if revision is not None:
             return revision
+        tenant_id = str(tenant)
+        next_revision = int(
+            session.execute(
+                self._sa.select(
+                    self._sa.func.coalesce(
+                        self._sa.func.max(self._revisions.c.revision),
+                        0,
+                    )
+                    + 1
+                ).where(self._revisions.c.tenant_id == tenant_id)
+            ).scalar_one()
+        )
         result = cast(
             "CursorResult[object]",
-            session.execute(self._revisions.insert().values()),
+            session.execute(
+                self._revisions.insert().values(
+                    tenant_id=tenant_id,
+                    revision=next_revision,
+                )
+            ),
         )
-        return Revision(int(result.inserted_primary_key[0]))
+        if result.rowcount != 1:
+            raise RuntimeError("failed to create relation repository revision")
+        return Revision(next_revision)
 
-    def _head_revision(self, session: Session) -> Revision:
-        revision = self._revisions.c.revision
+    def _head_revision(self, session: Session, tenant: TenantId) -> Revision:
         value = session.execute(
-            self._sa.select(self._sa.func.coalesce(self._sa.func.max(revision), 0))
+            self._sa.select(
+                self._sa.func.coalesce(self._sa.func.max(self._revisions.c.revision), 0)
+            ).where(self._revisions.c.tenant_id == str(tenant))
         ).scalar_one()
         return Revision(int(value))
 
-    def _visible_at(self, revision: Revision) -> object:
+    def _visible_at(self, context: ReadContext) -> object:
         return self._sa.and_(
-            self._table.c.created_revision <= revision.value,
+            self._table.c.tenant_id == str(context.tenant),
+            self._table.c.created_revision <= context.revision.value,
             self._sa.or_(
                 self._table.c.deleted_revision.is_(None),
-                self._table.c.deleted_revision > revision.value,
+                self._table.c.deleted_revision > context.revision.value,
             ),
         )
 
-    def _raise_if_future_revision(self, revision: Revision) -> None:
-        head = self.head_revision()
-        if revision > head:
-            raise ValueError(f"requested revision {revision} is newer than head {head}")
+    def _raise_if_future_revision(self, context: ReadContext) -> None:
+        head = self.head_revision(context.tenant)
+        if context.revision > head:
+            raise ValueError(
+                f"requested revision {context.revision} is newer than head {head}"
+            )

@@ -18,6 +18,7 @@ Typical usage (app factory):
 The extension expects your application to provide (directly or via config):
 - a built schema registry module path in `ZANZIBAR_SCHEMA` with attribute `registry`
 - a callable or object that yields a relations repository in `ZANZIBAR_RELATIONS_REPO`
+- optional tenant id in `ZANZIBAR_TENANT`
 - optional tuple cache factory in `ZANZIBAR_TUPLE_CACHE`
 
 You can instead pass these explicitly to `init_app`.
@@ -34,6 +35,7 @@ from zanzipy.engine_integration import (
     configure_authorization,
     reset_authorization,
 )
+from zanzipy.storage.revision import TenantId
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -89,6 +91,7 @@ class Zanzibar:
         schema_registry: Any | None = None,
         relations_repository: Any | Callable[..., Any] | None = None,
         tuple_cache: Any | Callable[..., Any] | None = None,
+        tenant: TenantId | str | None = None,
         enable_debug: bool | None = None,
         max_check_depth: int | None = None,
     ) -> None:
@@ -100,6 +103,7 @@ class Zanzibar:
           - ZANZIBAR_SCHEMA: import path like "myapp.authz_schema:registry" or
             a module object with attribute `registry`
           - ZANZIBAR_RELATIONS_REPO: object or callable returning a repo
+          - ZANZIBAR_TENANT: tenant id string or TenantId (defaults to "default")
           - ZANZIBAR_TUPLE_CACHE: object or callable returning a cache
 
         Factories may accept the Flask app as their only positional argument.
@@ -128,10 +132,15 @@ class Zanzibar:
             "TupleCache | None",
             self._materialize_config_value(raw_cache, app),
         )
+        tenant_value = app.config.get(
+            "ZANZIBAR_TENANT",
+            TenantId("default") if tenant is None else tenant,
+        )
 
         client = ZanzibarClient(
             schema=registry,
             relations_repository=relations_repo,
+            tenant=tenant_value,
             enable_debug=bool(
                 app.config.get(
                     "ZANZIBAR_DEBUG",

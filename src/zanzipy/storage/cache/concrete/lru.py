@@ -1,4 +1,4 @@
-"""In-memory LRU cache for revisioned relation tuple buckets."""
+"""In-memory LRU cache for tenant-scoped relation tuple buckets."""
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -10,11 +10,12 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from zanzipy.models import Obj, RelationTuple, Subject
-    from zanzipy.storage.revision import Revision
+    from zanzipy.storage.revision import ReadContext
 
 
 @dataclass(frozen=True, slots=True)
 class _ObjectKey:
+    tenant_id: str
     namespace: str
     id: str
     revision: int
@@ -22,6 +23,7 @@ class _ObjectKey:
 
 @dataclass(frozen=True, slots=True)
 class _SubjectKey:
+    tenant_id: str
     namespace: str
     id: str
     relation: str | None
@@ -32,7 +34,7 @@ type _TupleCacheKey = _ObjectKey | _SubjectKey
 
 
 class LruTupleCache(TupleCache):
-    """Thread-safe size-bounded LRU/TTL cache for revisioned tuple buckets."""
+    """Thread-safe size-bounded LRU/TTL cache for tenant tuple buckets."""
 
     def __init__(
         self, *, max_entries: int = 10000, ttl_seconds: float | None = 30.0
@@ -47,39 +49,39 @@ class LruTupleCache(TupleCache):
         self,
         obj: Obj,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Sequence[RelationTuple] | None:
-        """Return cached tuples for an object/revision, or ``None`` on miss."""
-        return self._store.get(_object_key(obj, revision=revision))
+        """Return cached tuples for an object/context, or ``None`` on miss."""
+        return self._store.get(_object_key(obj, context=context))
 
     def set_by_object(
         self,
         obj: Obj,
         *,
-        revision: Revision,
+        context: ReadContext,
         tuples: Sequence[RelationTuple],
     ) -> None:
-        """Cache an object bucket for the exact revision key."""
-        self._store.set(_object_key(obj, revision=revision), tuple(tuples))
+        """Cache an object bucket for the exact tenant revision key."""
+        self._store.set(_object_key(obj, context=context), tuple(tuples))
 
     def get_by_subject(
         self,
         subject: Subject,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Sequence[RelationTuple] | None:
-        """Return cached tuples for a subject/revision, or ``None`` on miss."""
-        return self._store.get(_subject_key(subject, revision=revision))
+        """Return cached tuples for a subject/context, or ``None`` on miss."""
+        return self._store.get(_subject_key(subject, context=context))
 
     def set_by_subject(
         self,
         subject: Subject,
         *,
-        revision: Revision,
+        context: ReadContext,
         tuples: Sequence[RelationTuple],
     ) -> None:
-        """Cache a subject bucket for the exact revision key."""
-        self._store.set(_subject_key(subject, revision=revision), tuple(tuples))
+        """Cache a subject bucket for the exact tenant revision key."""
+        self._store.set(_subject_key(subject, context=context), tuple(tuples))
 
     def ping(self) -> bool:
         """Return ``True`` because the in-memory cache has no dependency."""
@@ -101,18 +103,20 @@ class LruTupleCache(TupleCache):
         return info
 
 
-def _object_key(obj: Obj, *, revision: Revision) -> _ObjectKey:
+def _object_key(obj: Obj, *, context: ReadContext) -> _ObjectKey:
     return _ObjectKey(
+        tenant_id=str(context.tenant),
         namespace=str(obj.namespace),
         id=str(obj.id),
-        revision=revision.value,
+        revision=context.revision.value,
     )
 
 
-def _subject_key(subject: Subject, *, revision: Revision) -> _SubjectKey:
+def _subject_key(subject: Subject, *, context: ReadContext) -> _SubjectKey:
     return _SubjectKey(
+        tenant_id=str(context.tenant),
         namespace=str(subject.namespace),
         id=str(subject.id),
         relation=None if subject.relation is None else str(subject.relation),
-        revision=revision.value,
+        revision=context.revision.value,
     )

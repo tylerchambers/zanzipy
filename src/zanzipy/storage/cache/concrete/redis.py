@@ -1,4 +1,4 @@
-"""Redis-backed cache for revisioned relation tuple buckets."""
+"""Redis-backed cache for tenant-scoped relation tuple buckets."""
 
 from dataclasses import dataclass
 import json
@@ -11,18 +11,18 @@ if TYPE_CHECKING:
 
     from zanzipy.models import Obj, RelationTuple, Subject
     from zanzipy.storage.common import RedisLike
-    from zanzipy.storage.revision import Revision
+    from zanzipy.storage.revision import ReadContext
 
 
 class RedisTupleCodec(Protocol):
     """Serialize tuple cache keys and values for Redis storage."""
 
-    def key_for_object(self, obj: Obj, *, revision: Revision) -> str:
-        """Build the Redis key for an object tuple bucket revision."""
+    def key_for_object(self, obj: Obj, *, context: ReadContext) -> str:
+        """Build the Redis key for an object tuple bucket context."""
         ...
 
-    def key_for_subject(self, subject: Subject, *, revision: Revision) -> str:
-        """Build the Redis key for a subject tuple bucket revision."""
+    def key_for_subject(self, subject: Subject, *, context: ReadContext) -> str:
+        """Build the Redis key for a subject tuple bucket context."""
         ...
 
     def encode(self, tuples: Sequence[RelationTuple]) -> bytes | str:
@@ -40,16 +40,19 @@ class DefaultRedisTupleCodec:
 
     prefix: str = "z:rt"
 
-    def key_for_object(self, obj: Obj, *, revision: Revision) -> str:
-        """Build an object key from prefix, object identity, and revision."""
-        return f"{self.prefix}:obj:{obj.namespace}:{obj.id}:rev:{revision.value}"
+    def key_for_object(self, obj: Obj, *, context: ReadContext) -> str:
+        """Build an object key from prefix, tenant, object, and revision."""
+        return (
+            f"{self.prefix}:tenant:{context.tenant}:obj:{obj.namespace}:{obj.id}:"
+            f"rev:{context.revision.value}"
+        )
 
-    def key_for_subject(self, subject: Subject, *, revision: Revision) -> str:
+    def key_for_subject(self, subject: Subject, *, context: ReadContext) -> str:
         """Build a subject key, using ``-`` for a wildcard relation."""
         rel = "-" if subject.relation is None else str(subject.relation)
         return (
-            f"{self.prefix}:subj:{subject.namespace}:{subject.id}:"
-            f"{rel}:rev:{revision.value}"
+            f"{self.prefix}:tenant:{context.tenant}:subj:{subject.namespace}:"
+            f"{subject.id}:{rel}:rev:{context.revision.value}"
         )
 
     def encode(self, tuples: Sequence[RelationTuple]) -> str:
@@ -84,10 +87,10 @@ class RedisTupleCache(TupleCache):
         self,
         obj: Obj,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Sequence[RelationTuple] | None:
         """Return an object bucket; delete invalid payloads and return ``None``."""
-        token = self._codec.key_for_object(obj, revision=revision)
+        token = self._codec.key_for_object(obj, context=context)
         raw = self._client.get(token)
         if raw is None:
             return None
@@ -101,22 +104,22 @@ class RedisTupleCache(TupleCache):
         self,
         obj: Obj,
         *,
-        revision: Revision,
+        context: ReadContext,
         tuples: Sequence[RelationTuple],
     ) -> None:
         """Store an object bucket in Redis using the configured TTL."""
         ex = None if self._ttl is None else int(self._ttl)
-        token = self._codec.key_for_object(obj, revision=revision)
+        token = self._codec.key_for_object(obj, context=context)
         self._client.set(token, self._codec.encode(tuples), ex=ex)
 
     def get_by_subject(
         self,
         subject: Subject,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Sequence[RelationTuple] | None:
         """Return a subject bucket; delete invalid payloads and return ``None``."""
-        token = self._codec.key_for_subject(subject, revision=revision)
+        token = self._codec.key_for_subject(subject, context=context)
         raw = self._client.get(token)
         if raw is None:
             return None
@@ -130,12 +133,12 @@ class RedisTupleCache(TupleCache):
         self,
         subject: Subject,
         *,
-        revision: Revision,
+        context: ReadContext,
         tuples: Sequence[RelationTuple],
     ) -> None:
         """Store a subject bucket in Redis using the configured TTL."""
         ex = None if self._ttl is None else int(self._ttl)
-        key = self._codec.key_for_subject(subject, revision=revision)
+        key = self._codec.key_for_subject(subject, context=context)
         self._client.set(key, self._codec.encode(tuples), ex=ex)
 
     def ping(self) -> bool:

@@ -1,4 +1,4 @@
-"""Revisioned storage contract for Zanzibar relation tuples."""
+"""Tenant-scoped, revisioned storage contract for Zanzibar relation tuples."""
 
 from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
@@ -9,79 +9,91 @@ if TYPE_CHECKING:
 
     from zanzipy.models import Obj, Relation, RelationTuple, Subject
     from zanzipy.storage.revision import (
+        ReadContext,
         RelationshipChange,
         Revision,
+        TenantId,
         TupleMutation,
+        WriteContext,
         WriteResult,
     )
 
 
 @runtime_checkable
 class RelationRepository(Protocol):
-    """Repository contract for revision-scoped durable relation tuple storage."""
+    """Repository contract for tenant-scoped durable relation tuple storage."""
 
-    def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
-        """Apply ``mutations`` atomically at one revision."""
+    def write(
+        self,
+        context: WriteContext,
+        mutations: Iterable[TupleMutation],
+    ) -> WriteResult:
+        """Apply ``mutations`` atomically at one tenant revision."""
 
-    def head_revision(self) -> Revision:
-        """Return the latest datastore revision available for reads."""
+    def head_revision(self, tenant: TenantId) -> Revision:
+        """Return the latest datastore revision available for ``tenant``."""
 
     def get(
         self,
         key: RelationTuple,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> RelationTuple | None:
-        """Return ``key`` at ``revision`` if present."""
+        """Return ``key`` in ``context`` if present."""
 
     def read(
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return tuples matching ``filter`` at ``revision`` using a forward path."""
+        """Return tuples matching ``filter`` in ``context`` using a forward path."""
 
     def read_reverse(
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return tuples matching ``filter`` at ``revision`` using a reverse path."""
+        """Return tuples matching ``filter`` in ``context`` using a reverse path."""
 
     def by_object(
         self,
         obj: Obj,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return tuples for ``obj`` at ``revision``."""
+        """Return tuples for ``obj`` in ``context``."""
 
-        return self.read(TupleFilter.from_object(obj), revision=revision)
+        return self.read(TupleFilter.from_object(obj), context=context)
 
     def by_subject(
         self,
         subject: Subject,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return tuples for ``subject`` at ``revision`` using the reverse path."""
+        """Return tuples for ``subject`` in ``context`` using the reverse path."""
 
-        return self.read_reverse(TupleFilter.from_subject(subject), revision=revision)
+        return self.read_reverse(TupleFilter.from_subject(subject), context=context)
 
     def by_relation(
         self,
         relation: Relation,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return tuples with relation name ``relation`` at ``revision``."""
+        """Return tuples with relation name ``relation`` in ``context``."""
 
-        return self.read(TupleFilter.from_relation(relation), revision=revision)
+        return self.read(TupleFilter.from_relation(relation), context=context)
 
-    def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
-        """Yield tuple changes committed after ``after``."""
+    def watch(
+        self,
+        tenant: TenantId,
+        *,
+        after: Revision,
+    ) -> Iterator[RelationshipChange]:
+        """Yield ``tenant`` tuple changes committed after ``after``."""
 
     def ping(self) -> bool:
         """Return whether the repository is reachable."""

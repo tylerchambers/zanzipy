@@ -2,7 +2,20 @@ from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.cache.concrete.lru import LruTupleCache
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
 from zanzipy.storage.repos.decorators.cached_relations import CachedRelationRepository
-from zanzipy.storage.revision import Revision, TupleMutation
+from zanzipy.storage.revision import (
+    ReadContext,
+    Revision,
+    TenantId,
+    TupleMutation,
+    WriteContext,
+)
+
+TENANT = TenantId("default")
+OTHER_TENANT = TenantId("other")
+
+
+def _read_context(revision: Revision, tenant: TenantId = TENANT) -> ReadContext:
+    return ReadContext(tenant, revision)
 
 
 def _rt(
@@ -27,21 +40,20 @@ class TestCachedRelationRepository:
 
         first = _rt("doc", "1", "viewer", "user", "alice")
         second = _rt("doc", "1", "viewer", "user", "bob")
-        first_write = repo.write((TupleMutation.touch(first),))
+        first_write = repo.write(WriteContext(TENANT), (TupleMutation.touch(first),))
 
-        assert list(repo.by_object(first.object, revision=first_write.revision)) == [
-            first
-        ]
+        assert list(
+            repo.by_object(first.object, context=_read_context(first_write.revision))
+        ) == [first]
 
-        second_write = repo.write((TupleMutation.touch(second),))
+        second_write = repo.write(WriteContext(TENANT), (TupleMutation.touch(second),))
 
-        assert list(repo.by_object(first.object, revision=first_write.revision)) == [
-            first
-        ]
-        assert list(repo.by_object(first.object, revision=second_write.revision)) == [
-            first,
-            second,
-        ]
+        assert list(
+            repo.by_object(first.object, context=_read_context(first_write.revision))
+        ) == [first]
+        assert list(
+            repo.by_object(first.object, context=_read_context(second_write.revision))
+        ) == [first, second]
 
     def test_subject_cache_is_revision_scoped(self) -> None:
         backend = InMemoryRelationRepository()
@@ -50,12 +62,16 @@ class TestCachedRelationRepository:
 
         first = _rt("doc", "1", "viewer", "user", "alice")
         second = _rt("doc", "2", "viewer", "user", "alice")
-        first_write = repo.write((TupleMutation.touch(first),))
-        second_write = repo.write((TupleMutation.touch(second),))
+        first_write = repo.write(WriteContext(TENANT), (TupleMutation.touch(first),))
+        second_write = repo.write(WriteContext(TENANT), (TupleMutation.touch(second),))
         filt = TupleFilter(subject_type="user", subject_id="alice")
 
-        assert list(repo.read_reverse(filt, revision=first_write.revision)) == [first]
-        assert list(repo.read_reverse(filt, revision=second_write.revision)) == [
+        assert list(
+            repo.read_reverse(filt, context=_read_context(first_write.revision))
+        ) == [first]
+        assert list(
+            repo.read_reverse(filt, context=_read_context(second_write.revision))
+        ) == [
             first,
             second,
         ]
@@ -66,13 +82,87 @@ class TestCachedRelationRepository:
         repo = CachedRelationRepository(backend, cache=cache)
 
         tuple_ = _rt("doc", "1", "viewer", "user", "alice")
-        write = repo.write((TupleMutation.touch(tuple_),))
-        assert list(repo.by_object(tuple_.object, revision=write.revision)) == [tuple_]
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+        assert list(
+            repo.by_object(tuple_.object, context=_read_context(write.revision))
+        ) == [tuple_]
 
-        delete = repo.write((TupleMutation.delete(tuple_),))
+        delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(tuple_),))
 
-        assert list(repo.by_object(tuple_.object, revision=write.revision)) == [tuple_]
-        assert list(repo.by_object(tuple_.object, revision=delete.revision)) == []
+        assert list(
+            repo.by_object(tuple_.object, context=_read_context(write.revision))
+        ) == [tuple_]
+        assert (
+            list(repo.by_object(tuple_.object, context=_read_context(delete.revision)))
+            == []
+        )
+
+    def test_subject_cache_old_revision_survives_newer_delete(self) -> None:
+        backend = InMemoryRelationRepository()
+        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
+        repo = CachedRelationRepository(backend, cache=cache)
+
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        filt = TupleFilter(subject_type="user", subject_id="alice")
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+        assert list(repo.read_reverse(filt, context=_read_context(write.revision))) == [
+            tuple_
+        ]
+
+        delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(tuple_),))
+
+        assert list(repo.read_reverse(filt, context=_read_context(write.revision))) == [
+            tuple_
+        ]
+        assert (
+            list(repo.read_reverse(filt, context=_read_context(delete.revision))) == []
+        )
+
+    def test_object_and_subject_caches_are_tenant_scoped(self) -> None:
+        backend = InMemoryRelationRepository()
+        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
+        repo = CachedRelationRepository(backend, cache=cache)
+
+        tenant_object = _rt("doc", "shared", "viewer", "user", "alice")
+        tenant_subject = _rt("doc", "tenant-only", "viewer", "user", "carol")
+        other_object = _rt("doc", "shared", "viewer", "user", "bob")
+        other_subject = _rt("doc", "other-only", "viewer", "user", "carol")
+        tenant_write = repo.write(
+            WriteContext(TENANT),
+            (TupleMutation.touch(tenant_object), TupleMutation.touch(tenant_subject)),
+        )
+        other_write = repo.write(
+            WriteContext(OTHER_TENANT),
+            (TupleMutation.touch(other_object), TupleMutation.touch(other_subject)),
+        )
+
+        assert tenant_write.revision == Revision(1)
+        assert other_write.revision == Revision(1)
+        assert list(
+            repo.by_object(
+                tenant_object.object,
+                context=_read_context(tenant_write.revision, TENANT),
+            )
+        ) == [tenant_object]
+        assert list(
+            repo.by_object(
+                other_object.object,
+                context=_read_context(other_write.revision, OTHER_TENANT),
+            )
+        ) == [other_object]
+
+        filt = TupleFilter(subject_type="user", subject_id="carol")
+        assert list(
+            repo.read_reverse(
+                filt, context=_read_context(tenant_write.revision, TENANT)
+            )
+        ) == [tenant_subject]
+        assert list(
+            repo.read_reverse(
+                filt,
+                context=_read_context(other_write.revision, OTHER_TENANT),
+            )
+        ) == [other_subject]
 
     def test_mixed_filter_bypasses_cache_but_uses_revision(self) -> None:
         backend = InMemoryRelationRepository()
@@ -81,10 +171,13 @@ class TestCachedRelationRepository:
 
         t1 = _rt("doc", "1", "viewer", "user", "alice")
         t2 = _rt("doc", "1", "viewer", "group", "eng", "member")
-        write = repo.write((TupleMutation.touch(t1), TupleMutation.touch(t2)))
+        write = repo.write(
+            WriteContext(TENANT),
+            (TupleMutation.touch(t1), TupleMutation.touch(t2)),
+        )
 
         mixed = TupleFilter(object_type="doc", subject_type="user")
-        assert list(repo.read(mixed, revision=write.revision)) == [t1]
+        assert list(repo.read(mixed, context=_read_context(write.revision))) == [t1]
 
     def test_direct_subject_filter_uses_broad_revision_bucket(self) -> None:
         backend = InMemoryRelationRepository()
@@ -93,12 +186,19 @@ class TestCachedRelationRepository:
 
         direct = _rt("doc", "1", "viewer", "group", "eng")
         userset = _rt("doc", "2", "viewer", "group", "eng", "member")
-        write = repo.write((TupleMutation.touch(direct), TupleMutation.touch(userset)))
+        write = repo.write(
+            WriteContext(TENANT),
+            (TupleMutation.touch(direct), TupleMutation.touch(userset)),
+        )
 
         exact = TupleFilter.from_subject(direct.subject)
         broad = TupleFilter(subject_type="group", subject_id="eng")
-        assert list(repo.read_reverse(exact, revision=write.revision)) == [direct]
-        assert list(repo.read_reverse(broad, revision=write.revision)) == [
+        assert list(
+            repo.read_reverse(exact, context=_read_context(write.revision))
+        ) == [direct]
+        assert list(
+            repo.read_reverse(broad, context=_read_context(write.revision))
+        ) == [
             direct,
             userset,
         ]
@@ -110,9 +210,10 @@ class TestCachedRelationRepository:
             cache=LruTupleCache(max_entries=100, ttl_seconds=None),
         )
         tuple_ = _rt("doc", "1", "viewer", "user", "alice")
-        write = repo.write((TupleMutation.touch(tuple_),))
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
 
-        changes = list(repo.watch(after=Revision(0)))
+        changes = list(repo.watch(TENANT, after=Revision(0)))
 
-        assert [change.revision for change in changes] == [write.revision]
+        assert [change.token for change in changes] == [write.token]
+        assert [change.tenant for change in changes] == [TENANT]
         assert [change.relation_tuple for change in changes] == [tuple_]

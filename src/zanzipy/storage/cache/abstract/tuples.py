@@ -1,4 +1,4 @@
-"""Abstract cache interfaces for revisioned Zanzibar relation tuple buckets."""
+"""Abstract cache interfaces for tenant-scoped Zanzibar relation tuple buckets."""
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
@@ -7,49 +7,49 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from zanzipy.models import Obj, RelationTuple, Subject
-    from zanzipy.storage.revision import Revision
+    from zanzipy.storage.revision import ReadContext
 
 
 class TupleCache(ABC):
-    """Cache interface for immutable revision-scoped relation tuple buckets."""
+    """Cache interface for immutable tenant and revision scoped tuple buckets."""
 
     @abstractmethod
     def get_by_object(
         self,
         obj: Obj,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Sequence[RelationTuple] | None:
-        """Return cached tuples for ``obj`` at ``revision`` or ``None``."""
+        """Return cached tuples for ``obj`` in ``context`` or ``None``."""
 
     @abstractmethod
     def set_by_object(
         self,
         obj: Obj,
         *,
-        revision: Revision,
+        context: ReadContext,
         tuples: Sequence[RelationTuple],
     ) -> None:
-        """Populate the cache entry for ``obj`` at ``revision``."""
+        """Populate the cache entry for ``obj`` in ``context``."""
 
     @abstractmethod
     def get_by_subject(
         self,
         subject: Subject,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Sequence[RelationTuple] | None:
-        """Return cached tuples for ``subject`` at ``revision`` or ``None``."""
+        """Return cached tuples for ``subject`` in ``context`` or ``None``."""
 
     @abstractmethod
     def set_by_subject(
         self,
         subject: Subject,
         *,
-        revision: Revision,
+        context: ReadContext,
         tuples: Sequence[RelationTuple],
     ) -> None:
-        """Populate the cache entry for ``subject`` at ``revision``."""
+        """Populate the cache entry for ``subject`` in ``context``."""
 
     def ping(self) -> bool:
         """Return whether the cache is reachable."""

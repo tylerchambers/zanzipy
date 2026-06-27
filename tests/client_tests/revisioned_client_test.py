@@ -33,7 +33,7 @@ def test_write_result_drives_at_least_as_fresh_check_and_reads() -> None:
 
     assert isinstance(write, WriteResult)
     assert write.revision == Revision(1)
-    consistency = AtLeastAsFresh(write.revision)
+    consistency = AtLeastAsFresh(write.token)
     assert client.check(
         "document:doc1",
         "viewer",
