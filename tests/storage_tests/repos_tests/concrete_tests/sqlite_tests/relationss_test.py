@@ -73,3 +73,20 @@ class TestSQLiteRelationRepository:
             delete.revision,
         ]
         assert [change.relation_tuple for change in changes] == [t, t]
+
+    def test_schema_has_object_type_relation_index(self) -> None:
+        repo = SQLiteRelationRepository()
+
+        index_names = {
+            row["name"]
+            for row in repo._conn.execute("PRAGMA index_list(relation_tuples)")
+        }
+
+        assert "idx_rt_object_type_relation" in index_names
+        index_columns = [
+            row["name"]
+            for row in repo._conn.execute(
+                "PRAGMA index_info(idx_rt_object_type_relation)"
+            )
+        ]
+        assert index_columns == ["object_ns", "relation", "object_id"]

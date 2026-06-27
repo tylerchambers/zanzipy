@@ -103,6 +103,12 @@ class SQLiteRelationRepository(RelationRepository):
                 WHERE deleted_revision IS NULL;
                 """
             )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_rt_object_type_relation
+                ON relation_tuples (object_ns, relation, object_id);
+                """
+            )
 
     def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
         """Persist idempotent mutations atomically in one revision transaction.

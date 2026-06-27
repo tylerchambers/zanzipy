@@ -1,5 +1,7 @@
 from sqlalchemy import create_engine
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.schema import CreateIndex
 
 from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.repos.concrete.sqlalchemy import SQLAlchemyRelationRepository
@@ -12,6 +14,14 @@ def _repo() -> SQLAlchemyRelationRepository:
     repo = SQLAlchemyRelationRepository(session_factory)
     repo.create_schema(engine)
     return repo
+
+
+def _postgresql_index_sql(
+    repo: SQLAlchemyRelationRepository,
+    name: str,
+) -> str:
+    index = next(index for index in repo._table.indexes if index.name == name)
+    return str(CreateIndex(index).compile(dialect=postgresql.dialect()))
 
 
 class TestSQLAlchemyRelationRepository:
@@ -84,3 +94,49 @@ class TestSQLAlchemyRelationRepository:
             delete.revision,
         ]
         assert [change.relation_tuple for change in changes] == [t, t]
+
+    def test_postgresql_indexes_match_mvcc_access_paths(self) -> None:
+        repo = _repo()
+
+        active_unique = _postgresql_index_sql(repo, "idx_rt_active_unique")
+        assert "UNIQUE INDEX idx_rt_active_unique" in active_unique
+        assert "WHERE deleted_revision IS NULL" in active_unique
+
+        forward = _postgresql_index_sql(repo, "idx_rt_forward")
+        assert "INCLUDE (subject_ns, subject_id, subject_rel)" in forward
+
+        reverse = _postgresql_index_sql(repo, "idx_rt_reverse")
+        assert "INCLUDE (object_ns, object_id, relation)" in reverse
+
+        candidate = _postgresql_index_sql(repo, "idx_rt_object_type_relation")
+        assert "(object_ns, relation, object_id)" in candidate
+
+    def test_revision_columns_use_bigint_for_postgresql(self) -> None:
+        repo = _repo()
+        postgresql_dialect = postgresql.dialect()
+        sqlite_dialect = sqlite.dialect()
+
+        assert (
+            repo._revisions.c.revision.type.compile(
+                dialect=postgresql_dialect,
+            )
+            == "BIGINT"
+        )
+        assert (
+            repo._table.c.created_revision.type.compile(
+                dialect=postgresql_dialect,
+            )
+            == "BIGINT"
+        )
+        assert (
+            repo._table.c.deleted_revision.type.compile(
+                dialect=postgresql_dialect,
+            )
+            == "BIGINT"
+        )
+        assert (
+            repo._revisions.c.revision.type.compile(
+                dialect=sqlite_dialect,
+            )
+            == "INTEGER"
+        )
