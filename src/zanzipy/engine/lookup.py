@@ -1,8 +1,6 @@
 from typing import TYPE_CHECKING
 
-from zanzipy.engine.resolver import RuleResolver
 from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject, TupleFilter
-from zanzipy.schema.relations import RelationDef
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
@@ -15,8 +13,7 @@ from zanzipy.schema.rules import (
 )
 
 if TYPE_CHECKING:
-    from zanzipy.schema.registry import SchemaRegistry
-    from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
+    from zanzipy.schema.compiled import CompiledAuthorizationModel
     from zanzipy.storage.repos.abstract.relations import RelationRepository
     from zanzipy.storage.revision import ReadContext
 
@@ -28,18 +25,13 @@ class LookupEngine:
         self,
         *,
         relations_repository: RelationRepository,
-        schema: SchemaRegistry,
+        authorization_model: CompiledAuthorizationModel,
         max_depth: int = 25,
-        compiled_rules_cache: CompiledRuleCache[RewriteRule] | None = None,
     ) -> None:
-        """Create a reverse lookup engine over a repository and schema."""
+        """Create a reverse lookup engine over a repository and compiled model."""
         self._relations = relations_repository
-        self._schema = schema
         self._max_depth = max_depth
-        self._resolver = RuleResolver(
-            schema=schema,
-            compiled_rules_cache=compiled_rules_cache,
-        )
+        self._model = authorization_model
 
     def lookup_resources(
         self,
@@ -97,7 +89,7 @@ class LookupEngine:
             return set()
 
         try:
-            rewrite = self._resolver.resolve(resource_type, relation)
+            rewrite = self._model.resolve(resource_type, relation)
         except ValueError:
             return set()
 
@@ -287,7 +279,7 @@ class LookupEngine:
         depth: int,
     ) -> set[Obj]:
         resources: set[Obj] = set()
-        for target_type in self._tuple_to_userset_target_types(
+        for target_type in self._model.tuple_to_userset_target_types(
             resource_type=resource_type,
             tuple_relation=tuple_relation,
         ):
@@ -325,9 +317,9 @@ class LookupEngine:
         depth: int,
     ) -> set[Subject]:
         usersets: set[Subject] = set()
-        for subject_type, subject_relation in self._allowed_userset_refs(
-            resource_type,
-            relation,
+        for subject_type, subject_relation in self._model.allowed_userset_refs(
+            resource_type=resource_type,
+            relation=relation,
         ):
             containing_objects = self._lookup_relation(
                 resource_type=subject_type,
@@ -345,45 +337,6 @@ class LookupEngine:
                 for obj in containing_objects
             )
         return usersets
-
-    def _allowed_userset_refs(
-        self,
-        resource_type: str,
-        relation: str,
-    ) -> tuple[tuple[str, str], ...]:
-        try:
-            definition = self._schema.get_definition(resource_type, relation)
-        except ValueError:
-            return ()
-        if not isinstance(definition, RelationDef):
-            return ()
-
-        refs: set[tuple[str, str]] = set()
-        for subject_ref in definition.allowed_subjects:
-            if subject_ref.relation is None:
-                continue
-            refs.add((str(subject_ref.namespace), str(subject_ref.relation)))
-        return tuple(refs)
-
-    def _tuple_to_userset_target_types(
-        self,
-        *,
-        resource_type: str,
-        tuple_relation: str,
-    ) -> tuple[str, ...]:
-        try:
-            definition = self._schema.get_definition(resource_type, tuple_relation)
-        except ValueError:
-            return ()
-        if not isinstance(definition, RelationDef):
-            return ()
-
-        target_types: set[str] = set()
-        for subject_ref in definition.allowed_subjects:
-            if subject_ref.relation is not None or subject_ref.wildcard:
-                continue
-            target_types.add(str(subject_ref.namespace))
-        return tuple(target_types)
 
     @staticmethod
     def _direct_subject_matches(subject: Subject) -> tuple[Subject, ...]:

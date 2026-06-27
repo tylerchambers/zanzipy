@@ -113,7 +113,7 @@ class SchemaRegistry:
         )
 
     def get_relation_definition(self, object_type: str, relation: str) -> dict:
-        """Return a serialized relation or permission definition for engine use."""
+        """Return a canonical serialized relation or permission definition."""
 
         return self.get_definition(object_type, relation).to_dict()
 

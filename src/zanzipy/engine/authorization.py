@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 from zanzipy.engine.checker import CheckEngine
 from zanzipy.engine.expander import ExpansionEngine
 from zanzipy.engine.lookup import LookupEngine
+from zanzipy.schema.compiled import CompiledAuthorizationModel
 
 if TYPE_CHECKING:
     from zanzipy.engine.expander import SubjectSet
@@ -18,10 +19,10 @@ if TYPE_CHECKING:
 class AuthorizationEngine:
     """Cohesive boundary for authorization reads over one schema and repository.
 
-    The engine suite owns check, expand, and lookup operations with shared
-    traversal limits, debug settings, repository decorators, and compiled rule
-    cache wiring. Callers supply an already-resolved read context so tenant and
-    revision selection stays outside the authorization traversal boundary.
+    The engine suite owns one compiled authorization model shared by check,
+    expand, and lookup operations, plus shared traversal limits, debug settings,
+    repository decorators, and cache wiring. Callers supply an already-resolved
+    read context so tenant and revision selection stays outside traversal.
     """
 
     def __init__(
@@ -29,6 +30,7 @@ class AuthorizationEngine:
         *,
         relations_repository: RelationRepository,
         schema: SchemaRegistry,
+        authorization_model: CompiledAuthorizationModel | None = None,
         max_depth: int = 25,
         enable_debug: bool = False,
         compiled_rules_cache: CompiledRuleCache[RewriteRule] | None = None,
@@ -50,24 +52,28 @@ class AuthorizationEngine:
         self._schema = schema
         self._max_depth = max_depth
         self._enable_debug = enable_debug
+        if authorization_model is None:
+            authorization_model = CompiledAuthorizationModel.from_schema(
+                schema,
+                compiled_rules_cache=compiled_rules_cache,
+            )
+
+        self._authorization_model = authorization_model
         self._checker = CheckEngine(
             relations_repository=relations_repository,
-            schema=schema,
+            authorization_model=authorization_model,
             max_depth=max_depth,
             enable_debug=enable_debug,
-            compiled_rules_cache=compiled_rules_cache,
         )
         self._expander = ExpansionEngine(
             relations_repository=relations_repository,
-            schema=schema,
+            authorization_model=authorization_model,
             max_depth=max_depth,
-            compiled_rules_cache=compiled_rules_cache,
         )
         self._lookup = LookupEngine(
             relations_repository=relations_repository,
-            schema=schema,
+            authorization_model=authorization_model,
             max_depth=max_depth,
-            compiled_rules_cache=compiled_rules_cache,
         )
 
     @property
@@ -81,6 +87,12 @@ class AuthorizationEngine:
         """Return the schema registry shared by all authorization operations."""
 
         return self._schema
+
+    @property
+    def authorization_model(self) -> CompiledAuthorizationModel:
+        """Return the compiled model snapshot shared by all operations."""
+
+        return self._authorization_model
 
     @property
     def max_depth(self) -> int:
