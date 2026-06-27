@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from zanzipy.engine._rewrite_dispatch import RewriteRuleDispatcher
+from zanzipy.engine.rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.models import (
     CheckRequest,
     CheckResponse,

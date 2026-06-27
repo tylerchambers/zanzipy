@@ -1,6 +1,6 @@
 import pytest
 
-from zanzipy.engine._rewrite_dispatch import RewriteRuleDispatcher
+from zanzipy.engine.rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,

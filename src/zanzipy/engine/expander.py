@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from zanzipy.engine._rewrite_dispatch import RewriteRuleDispatcher
+from zanzipy.engine.rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject, TupleFilter
 
 if TYPE_CHECKING:
