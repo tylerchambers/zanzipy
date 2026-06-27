@@ -9,7 +9,7 @@ from .types import SchemaDefinitionType
 
 @dataclass(frozen=True, slots=True)
 class PermissionDef:
-    """Defines a computed permission: rewrite expression only."""
+    """Computed permission definition backed by a rewrite expression."""
 
     name: str
     rewrite: RewriteRule
@@ -20,6 +20,7 @@ class PermissionDef:
         Rel(self.name)
 
     def to_dict(self) -> dict:
+        """Serialize the permission to its canonical schema dictionary."""
         return {
             "type": SchemaDefinitionType.PERMISSION,
             "name": self.name,
@@ -29,6 +30,7 @@ class PermissionDef:
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
+        """Deserialize a permission definition from its schema dictionary."""
         return cls(
             name=data["name"],
             rewrite=RewriteRule.from_dict(data["rewrite"]),

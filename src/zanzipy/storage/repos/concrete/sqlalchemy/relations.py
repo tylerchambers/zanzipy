@@ -31,9 +31,14 @@ _REVISIONS_TABLE_NAME = "revisions"
 
 
 class SQLAlchemyRelationRepository(RelationRepository):
-    """SQLAlchemy MVCC implementation of ``RelationRepository``."""
+    """SQLAlchemy repository using created/deleted revisions for tuple visibility."""
 
     def __init__(self, session_factory: Callable[[], object]) -> None:
+        """Import SQLAlchemy and define relation table metadata.
+
+        The supplied ``session_factory`` is called per operation; sessions are
+        committed or rolled back and then closed by repository methods.
+        """
         try:
             self._sa = import_module("sqlalchemy")
         except Exception as exc:
@@ -107,11 +112,16 @@ class SQLAlchemyRelationRepository(RelationRepository):
         )
 
     def create_schema(self, bind: Engine) -> None:
-        """Create relation tuple tables and indexes on ``bind``."""
+        """Create revision and relation tuple tables plus indexes on ``bind``."""
 
         self._metadata.create_all(bind=bind)
 
     def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
+        """Persist idempotent mutations atomically using a short-lived session.
+
+        Raises:
+            ValueError: If a mutation contains an unknown operation.
+        """
         session = self._session_factory()
         revision: Revision | None = None
         changes: list[tuple[RelationTuple, RelationshipOperation]] = []
@@ -161,6 +171,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
             session.close()
 
     def head_revision(self) -> Revision:
+        """Return the greatest committed revision visible through a session."""
         session = self._session_factory()
         try:
             return self._head_revision(session)
@@ -173,6 +184,11 @@ class SQLAlchemyRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> RelationTuple | None:
+        """Return ``key`` when its visibility window includes ``revision``.
+
+        Raises:
+            ValueError: If ``revision`` is newer than the head revision.
+        """
         self._raise_if_future_revision(revision)
         session = self._session_factory()
         try:
@@ -197,6 +213,11 @@ class SQLAlchemyRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> Iterable[RelationTuple]:
+        """Return tuples visible at ``revision`` that match ``filter``.
+
+        Raises:
+            ValueError: If ``revision`` is newer than the head revision.
+        """
         return self._select(filter, revision=revision)
 
     def read_reverse(
@@ -205,9 +226,19 @@ class SQLAlchemyRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> Iterable[RelationTuple]:
+        """Return reverse-filtered tuples visible at ``revision``.
+
+        Raises:
+            ValueError: If ``revision`` is newer than the head revision.
+        """
         return self._select(filter, revision=revision)
 
     def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
+        """Yield writes and deletes committed after ``after`` by revision order.
+
+        Raises:
+            ValueError: If ``after`` is newer than the head revision.
+        """
         self._raise_if_future_revision(after)
         session = self._session_factory()
         try:
@@ -261,6 +292,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
             session.close()
 
     def info(self) -> dict[str, object]:
+        """Return SQLAlchemy backend diagnostics, table names, and columns."""
         return {
             "backend": "sqlalchemy",
             "table": _TABLE_NAME,

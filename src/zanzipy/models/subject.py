@@ -10,12 +10,10 @@ from .relation import Relation
 
 @dataclass(frozen=True, slots=True)
 class Subject:
-    """
-    Subject value object that can represent a direct subject or a subject set.
+    """Immutable subject reference with optional subject-set relation.
 
-    Forms:
-    - namespace:id
-    - namespace:id#relation
+    Canonical strings are ``namespace:id`` for direct subjects and
+    ``namespace:id#relation`` for subject sets.
     """
 
     namespace: NamespaceId
@@ -37,6 +35,7 @@ class Subject:
         id: str,
         relation: str | None = None,
     ) -> Self:
+        """Create a subject from string parts, validating each component."""
         return cls(
             NamespaceId(namespace),
             EntityId(id),
@@ -45,6 +44,11 @@ class Subject:
 
     @classmethod
     def from_object(cls, obj: object) -> Self:
+        """Create a direct subject reference to the same entity as an object.
+
+        Raises:
+            TypeError: If ``obj`` is not an ``Obj`` instance.
+        """
         from .object import Obj
 
         if not isinstance(obj, Obj):
@@ -53,6 +57,11 @@ class Subject:
 
     @classmethod
     def from_string(cls, subject_string: str) -> Self:
+        """Parse a canonical direct-subject or subject-set string.
+
+        Raises:
+            SubjectValidationError: If the string is malformed or relation is empty.
+        """
         base, separator, rel = subject_string.partition("#")
         if separator != "" and rel == "":
             raise SubjectValidationError("subject_relation cannot be empty string")
@@ -65,6 +74,7 @@ class Subject:
         return cls.from_parts(ns_str, id_str, rel if separator != "" else None)
 
     def to_dict(self) -> dict:
+        """Return the portable dictionary form for this subject reference."""
         return {
             "namespace": str(self.namespace),
             "id": str(self.id),
@@ -73,6 +83,7 @@ class Subject:
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
+        """Create a subject reference from its dictionary representation."""
         return cls.from_parts(
             data["namespace"],
             data["id"],
@@ -80,6 +91,11 @@ class Subject:
         )
 
     def require_direct(self) -> Self:
+        """Return this subject if it is direct, otherwise raise an error.
+
+        Raises:
+            SubjectValidationError: If the subject includes a subject-set relation.
+        """
         if self.relation is not None:
             raise SubjectValidationError(
                 "direct subject cannot include a subject relation"

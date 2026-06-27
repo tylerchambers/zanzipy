@@ -13,9 +13,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class TupleFilter:
-    """
-    Filter criteria for querying relation tuples.
-    All fields are optional - only specified fields are used for filtering.
+    """Optional criteria for matching relation tuples.
+
+    ``None`` leaves a field unconstrained; an empty ``subject_relation`` matches
+    only direct subjects with no subject-set relation. Non-empty fields are
+    validated as namespace, entity, or relation identifiers on construction.
     """
 
     DIRECT_SUBJECT_RELATION: ClassVar[str] = ""
@@ -53,7 +55,7 @@ class TupleFilter:
         return str(subject.relation)
 
     def matches(self, tuple: RelationTuple) -> bool:
-        """Check if a tuple matches this filter."""
+        """Return whether a tuple satisfies every specified criterion."""
         return (
             self._matches_object(tuple)
             and self._matches_relation(tuple)
@@ -142,12 +144,18 @@ class TupleFilter:
 
     @property
     def object_ref(self) -> Obj | None:
+        """Return the exact object value when both object fields are set."""
         if self.object_type is None or self.object_id is None:
             return None
         return Obj.from_parts(self.object_type, self.object_id)
 
     @property
     def subject_ref(self) -> Subject | None:
+        """Return a subject value when subject type and id are set.
+
+        An unconstrained or direct-only subject relation is represented as a
+        direct subject with no relation.
+        """
         if self.subject_type is None or self.subject_id is None:
             return None
         relation = (
@@ -159,6 +167,7 @@ class TupleFilter:
 
     @property
     def is_object_bucket(self) -> bool:
+        """Return whether this filter selects an object cache bucket."""
         return (
             self.object_type is not None
             and self.object_id is not None
@@ -169,6 +178,7 @@ class TupleFilter:
 
     @property
     def is_subject_bucket(self) -> bool:
+        """Return whether this filter selects a subject cache bucket."""
         return (
             self.subject_type is not None
             and self.subject_id is not None
@@ -177,6 +187,11 @@ class TupleFilter:
         )
 
     def subject_bucket_filter(self) -> TupleFilter:
+        """Return the broader subject-bucket filter for this subject.
+
+        Raises:
+            ValueError: If subject type or id is missing.
+        """
         if self.subject_type is None or self.subject_id is None:
             raise ValueError("subject bucket filter requires subject type and id")
         return type(self)(

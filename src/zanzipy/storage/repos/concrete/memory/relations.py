@@ -14,11 +14,11 @@ from zanzipy.storage.revision import (
 
 
 class InMemoryRelationRepository(RelationRepository):
-    """In-memory ``RelationRepository`` with exact snapshot reads.
+    """In-memory ``RelationRepository`` with exact revision snapshots.
 
-    The repository preserves insertion order for deterministic reads and stores a
-    full snapshot per committed revision. It is intentionally simple and not
-    thread-safe.
+    The repository preserves insertion order for deterministic reads, stores a
+    full snapshot per committed revision, and replays committed changes through
+    ``watch``. It is intentionally simple and not thread-safe.
     """
 
     def __init__(self) -> None:
@@ -28,6 +28,11 @@ class InMemoryRelationRepository(RelationRepository):
         self._changes: list[RelationshipChange] = []
 
     def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
+        """Apply idempotent tuple writes and deletes at one new revision.
+
+        Raises:
+            ValueError: If a mutation contains an unknown operation.
+        """
         changes: list[tuple[RelationTuple, RelationshipOperation]] = []
         for mutation in mutations:
             if mutation.operation is RelationshipOperation.WRITE:
@@ -43,6 +48,7 @@ class InMemoryRelationRepository(RelationRepository):
         return self._commit(changes)
 
     def head_revision(self) -> Revision:
+        """Return the latest in-memory revision."""
         return self._revision
 
     def get(
@@ -51,6 +57,11 @@ class InMemoryRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> RelationTuple | None:
+        """Return ``key`` when it is visible in the requested snapshot.
+
+        Raises:
+            ValueError: If ``revision`` is not a known snapshot.
+        """
         tuple_key = str(key)
         snapshot = self._snapshot_at(revision)
         if tuple_key not in snapshot:
@@ -63,6 +74,11 @@ class InMemoryRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> Iterable[RelationTuple]:
+        """Return tuples matching ``filter`` in snapshot insertion order.
+
+        Raises:
+            ValueError: If ``revision`` is not a known snapshot.
+        """
         snapshot = self._snapshot_at(revision)
         return [tuple_ for tuple_ in snapshot.values() if filter.matches(tuple_)]
 
@@ -72,9 +88,19 @@ class InMemoryRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> Iterable[RelationTuple]:
+        """Return matching tuples using the same in-memory scan as ``read``.
+
+        Raises:
+            ValueError: If ``revision`` is not a known snapshot.
+        """
         return self.read(filter, revision=revision)
 
     def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
+        """Yield committed tuple changes after ``after`` in commit order.
+
+        Raises:
+            ValueError: If ``after`` is newer than the head revision.
+        """
         if after > self._revision:
             raise ValueError(
                 f"requested revision {after} is newer than head {self._revision}"
@@ -84,6 +110,7 @@ class InMemoryRelationRepository(RelationRepository):
                 yield change
 
     def info(self) -> dict[str, object]:
+        """Return backend diagnostics for revision and active tuple count."""
         return {
             "backend": "memory",
             "head_revision": self._revision.value,

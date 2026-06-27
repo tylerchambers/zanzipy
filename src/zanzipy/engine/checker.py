@@ -37,16 +37,11 @@ class _Counters:
 
 
 class CheckEngine:
-    """
-    Evaluates permission checks by traversing the relation graph.
+    """Evaluates Zanzibar relation and permission checks at a repository revision.
 
-    Algorithm:
-    1. Resolve rewrite rule from the schema registry (with optional compiled cache)
-    2. For Direct/This: check stored tuples and expand usersets
-    3. For Union: short-circuit on first success
-    4. For Intersection: require all children to succeed
-    5. For Exclusion: base succeeds and subtract fails
-    6. Recurse with cycle detection and depth limits
+    The engine resolves schema rewrites, follows subject-set edges, short-circuits
+    boolean operators where possible, and bounds traversal with cycle and depth
+    checks so callers receive a deterministic authorization result.
     """
 
     def __init__(
@@ -73,9 +68,11 @@ class CheckEngine:
         *,
         revision: Revision | None = None,
     ) -> CheckResponse:
-        """
-        Main entry point for permission checks.
-        Returns immediately on first positive result.
+        """Evaluate one check request and return the authorization result.
+
+        When no revision is supplied, the repository head is used. Debug traces
+        and counters are populated only when the engine was created with debug
+        support enabled.
         """
         revision = self._relations.head_revision() if revision is None else revision
         visited: set[tuple[str, str, str, str, str]] = set()

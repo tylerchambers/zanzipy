@@ -9,7 +9,7 @@ from .namespace import NamespaceId
 
 @dataclass(frozen=True, slots=True)
 class Obj:
-    """Object value with namespace and id."""
+    """Immutable object reference with canonical ``namespace:id`` form."""
 
     namespace: NamespaceId
     id: EntityId
@@ -25,10 +25,16 @@ class Obj:
 
     @classmethod
     def from_parts(cls, namespace: str, id: str) -> Self:
+        """Create an object reference from namespace and entity id strings."""
         return cls(NamespaceId(namespace), EntityId(id))
 
     @classmethod
     def from_string(cls, object_string: str) -> Self:
+        """Parse the canonical ``namespace:id`` object string.
+
+        Raises:
+            ObjectValidationError: If the string is not a valid object reference.
+        """
         ns_str, id_str = split_entity_ref(
             object_string,
             kind="object",
@@ -37,6 +43,7 @@ class Obj:
         return cls.from_parts(ns_str, id_str)
 
     def to_dict(self) -> dict:
+        """Return the portable dictionary form ``{"namespace": ..., "id": ...}``."""
         return {
             "namespace": str(self.namespace),
             "id": str(self.id),
@@ -44,4 +51,5 @@ class Obj:
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
+        """Create an object reference from its dictionary representation."""
         return cls.from_parts(data["namespace"], data["id"])

@@ -27,14 +27,17 @@ class ZanzibarEngine:
     """
 
     def __init__(self, client: ZanzibarClient) -> None:
+        """Wrap a configured client without changing its storage behavior."""
         self._client = client
 
     @property
     def schema(self) -> SchemaRegistry:
+        """Return the schema registry used by the underlying client."""
         return self._client.schema
 
     @property
     def relations_repository(self) -> RelationRepository:
+        """Return the relation repository used by the underlying client."""
         return self._client.relations_repository
 
     def write_tuple(
@@ -44,11 +47,13 @@ class ZanzibarEngine:
         relation: str,
         resource: Obj,
     ) -> WriteResult:
+        """Persist a subject-relation-resource tuple through the client."""
         return self._client.write(str(resource), relation, str(subject))
 
     def delete_tuple(
         self, *, subject: Subject, relation: str, resource: Obj
     ) -> WriteResult:
+        """Remove a subject-relation-resource tuple through the client."""
         return self._client.delete(str(resource), relation, str(subject))
 
     def check(
@@ -59,6 +64,7 @@ class ZanzibarEngine:
         resource: Obj,
         consistency: Consistency | None = None,
     ) -> bool:
+        """Return whether a subject has a permission on a resource."""
         return self._client.check(
             str(resource),
             permission,
@@ -73,6 +79,7 @@ class ZanzibarEngine:
         resource: Obj,
         consistency: Consistency | None = None,
     ) -> SubjectSet:
+        """Expand a resource permission into the matching subject set."""
         return self._client.expand(
             str(resource),
             permission,
@@ -88,6 +95,7 @@ class ZanzibarEngine:
         limit: int | None = None,
         consistency: Consistency | None = None,
     ) -> list[Obj]:
+        """List resources of a type that a subject can access."""
         objects = self._client.list_objects(
             resource_type,
             permission,
@@ -105,15 +113,22 @@ class ZanzibarEngine:
         resource: Obj | None = None,
         consistency: Consistency | None = None,
     ) -> Iterable:
+        """Read tuples constrained by subject and/or resource.
+
+        Raises:
+            ValueError: If neither subject nor resource is provided.
+        """
         if subject is None and resource is None:
             raise ValueError("At least one of subject or resource must be provided")
         filt = TupleFilter.from_parts(obj=resource, subject=subject)
         return self._client.read_tuples(filt, consistency=consistency)
 
     def list_direct_subjects(self, *, resource: Obj, relation: str) -> list[str]:
+        """List canonical direct subject strings for a resource relation."""
         return self._client.list_subjects_direct(str(resource), relation)
 
     def get_schema(self, namespace: str) -> dict:
+        """Return the serialized schema definition for a namespace."""
         # Return the namespace definition dict for convenience
         return self._client.schema.get_namespace(namespace).to_dict()
 
@@ -139,6 +154,11 @@ def reset_authorization(token: Token[ZanzibarEngine]) -> None:
 
 
 def get_authorization_engine() -> ZanzibarEngine:
+    """Return the engine bound to the current execution context.
+
+    Raises:
+        RuntimeError: If no engine has been configured for this context.
+    """
     try:
         return _engine_ctx.get()
     except LookupError as exc:

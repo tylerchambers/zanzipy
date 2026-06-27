@@ -48,6 +48,13 @@ class ZanzibarClient:
         max_check_depth: int = 25,
         tuple_cache: TupleCache | None = None,
     ) -> None:
+        """Create a client over a schema and revisioned relation repository.
+
+        Passing ``tuple_cache`` wraps the repository with cache-aware reads and
+        write invalidation. Pass ``check_engine`` only when reusing a custom
+        checker implementation; otherwise the client builds matching check and
+        expansion engines from the supplied schema.
+        """
         if tuple_cache is not None:
             from .storage.repos.decorators.cached_relations import (
                 CachedRelationRepository,
@@ -87,7 +94,7 @@ class ZanzibarClient:
         return self.relations_repository.write((TupleMutation.touch(rt),))
 
     def write_many(self, tuples: Sequence[tuple[str, str, str]]) -> WriteResult:
-        """Bulk grant: sequence of (object, relation, subject)."""
+        """Grant multiple relation tuples in a single repository commit."""
 
         mutations: list[TupleMutation] = []
         for obj, rel, subj in tuples:
@@ -110,7 +117,7 @@ class ZanzibarClient:
         *,
         consistency: Consistency | None = None,
     ) -> bool:
-        """Check if a direct subject has relation/permission on an object."""
+        """Return whether a direct subject is authorized at requested consistency."""
 
         revision = self._revision_for_consistency(consistency)
         return self.check_at_revision(
@@ -128,7 +135,7 @@ class ZanzibarClient:
         *,
         revision: Revision,
     ) -> bool:
-        """Check at an exact relation repository revision."""
+        """Return whether a direct subject is authorized at an exact revision."""
 
         request = CheckRequest.from_strings(object, relation, subject)
         response = self._check_engine.check(request, revision=revision)
@@ -142,7 +149,7 @@ class ZanzibarClient:
         *,
         consistency: Consistency | None = None,
     ) -> CheckResponse:
-        """Check and return full debugging info (trace, counters)."""
+        """Return the full check result, including optional debug trace data."""
 
         revision = self._revision_for_consistency(consistency)
         return self.check_detailed_at_revision(
@@ -160,7 +167,7 @@ class ZanzibarClient:
         *,
         revision: Revision,
     ) -> CheckResponse:
-        """Check at an exact revision and return debugging info."""
+        """Return the full check result evaluated against an exact revision."""
 
         request = CheckRequest.from_strings(object, relation, subject)
         return self._check_engine.check(request, revision=revision)

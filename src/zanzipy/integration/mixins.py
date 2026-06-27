@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class AuthorizableResource:
-    """Mixin for domain objects that can be accessed/protected."""
+    """Mixin for domain resources protected through the configured engine."""
 
     def get_resource_dict(self) -> dict:
         """Return {'namespace': str, 'id': Any} (and optional 'relation').
@@ -39,6 +39,7 @@ class AuthorizableResource:
 
     # Concrete helper methods
     def grant(self, subject: object, relation: str) -> None:
+        """Grant a relation on this resource through the configured engine."""
         engine = get_authorization_engine()
         subject_ref = _normalize_to_subject(subject)
         engine.write_tuple(
@@ -48,6 +49,7 @@ class AuthorizableResource:
         )
 
     def revoke(self, subject: object, relation: str) -> None:
+        """Revoke a relation on this resource through the configured engine."""
         engine = get_authorization_engine()
         subject_ref = _normalize_to_subject(subject)
         engine.delete_tuple(
@@ -57,6 +59,7 @@ class AuthorizableResource:
         )
 
     def check(self, subject: AuthorizableSubject, permission: str) -> bool:
+        """Return whether a subject has a permission on this resource."""
         engine = get_authorization_engine()
         return engine.check(
             subject=subject.get_subject_ref(),
@@ -65,6 +68,7 @@ class AuthorizableResource:
         )
 
     def who_can(self, permission: str) -> list[Subject]:
+        """Return subjects that currently satisfy a permission on this resource."""
         engine = get_authorization_engine()
         subject_set: SubjectSet = engine.expand(
             permission=permission, resource=self.get_resource_ref()
@@ -78,6 +82,7 @@ class AuthorizableResource:
         return results
 
     def get_permissions(self, subject: AuthorizableSubject) -> set[str]:
+        """Return schema permissions granted to the subject on this resource."""
         engine = get_authorization_engine()
         obj = self.get_resource_ref()
         ns = engine.schema.get_namespace(str(obj.namespace))
@@ -86,7 +91,7 @@ class AuthorizableResource:
 
 
 class AuthorizableSubject:
-    """Mixin for domain objects that can access resources (users, groups)."""
+    """Mixin for domain subjects that access resources through the engine."""
 
     def get_subject_dict(self) -> dict:
         """Return {'namespace': str, 'id': Any, 'relation': optional str}.
@@ -108,11 +113,13 @@ class AuthorizableSubject:
         return _Subject.from_dict(_coerce_subject_dict(raw))
 
     def can(self, resource: AuthorizableResource, permission: str) -> bool:
+        """Return whether this subject can access a resource permission."""
         return resource.check(self, permission)
 
     def get_accessible(
         self, resource_type: str, permission: str, limit: int | None = 100
     ) -> list[Obj]:
+        """List resources this subject can access for a permission."""
         engine = get_authorization_engine()
         return engine.list_resources(
             subject=self.get_subject_ref(),
@@ -122,6 +129,7 @@ class AuthorizableSubject:
         )
 
     def get_relations(self, resource: AuthorizableResource) -> set[str]:
+        """Return stored relations between this subject and a resource."""
         engine = get_authorization_engine()
         tuples: Iterable = engine.read_tuples(
             subject=self.get_subject_ref(), resource=resource.get_resource_ref()
@@ -130,18 +138,22 @@ class AuthorizableSubject:
 
 
 class AuthorizableGroup(AuthorizableSubject, AuthorizableResource):
-    """Mixin for groups that are both subjects and resources (have members)."""
+    """Mixin for groups modeled as both member subjects and resources."""
 
     def add_member(self, member: AuthorizableSubject) -> None:
+        """Grant group membership to a subject through the configured engine."""
         self.grant(member, "member")
 
     def remove_member(self, member: AuthorizableSubject) -> None:
+        """Remove group membership from a subject through the configured engine."""
         self.revoke(member, "member")
 
     def is_member(self, subject: AuthorizableSubject) -> bool:
+        """Return whether a subject is a direct or expanded group member."""
         return self.check(subject, "member")
 
     def get_members(self) -> list[Subject]:
+        """Return subjects that satisfy this group's member relation."""
         return self.who_can("member")
 
 

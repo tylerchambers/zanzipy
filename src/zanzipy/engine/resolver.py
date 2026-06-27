@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class RuleResolver:
-    """Resolve schema relation/permission definitions into rewrite rules."""
+    """Turns registered relation or permission definitions into rewrite trees."""
 
     def __init__(
         self,
@@ -22,7 +22,7 @@ class RuleResolver:
         self._compiled_cache = compiled_rules_cache
 
     def resolve(self, object_type: str, relation: str) -> RewriteRule:
-        """Resolve the current rewrite rule for an object type and relation."""
+        """Return the rewrite rule the engines should evaluate for this edge."""
         rel_def = self._schema.get_relation_definition(object_type, relation)
         rewrite = self._rewrite_from_definition(object_type, relation, rel_def)
 
