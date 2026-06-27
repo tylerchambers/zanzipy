@@ -1,4 +1,4 @@
-"""SQLite-backed relation tuple repository."""
+"""SQLite-backed revisioned relation tuple repository."""
 
 from contextlib import suppress
 import sqlite3
@@ -9,27 +9,31 @@ from zanzipy.storage.repos.concrete._rows import (
     RELATION_TUPLE_COLUMNS,
     StoredRelationTuple,
     filter_values,
-    unique_stored_tuples,
+    stored_tuple_values,
+)
+from zanzipy.storage.revision import (
+    RelationshipChange,
+    RelationshipOperation,
+    Revision,
+    TupleMutation,
+    WriteResult,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
 
     from zanzipy.models import RelationTuple, TupleFilter
 
 _SELECT_COLUMNS = ", ".join(RELATION_TUPLE_COLUMNS)
 _INSERT_COLUMNS = ", ".join(RELATION_TUPLE_COLUMNS)
 _INSERT_PLACEHOLDERS = ", ".join(f":{column}" for column in RELATION_TUPLE_COLUMNS)
+_VISIBLE_AT = (
+    "created_revision <= ? AND (deleted_revision IS NULL OR deleted_revision > ?)"
+)
 
 
 class SQLiteRelationRepository(RelationRepository):
-    """Stdlib SQLite implementation of ``RelationRepository``.
-
-    The schema stores the tuple's canonical string as the primary key and stores
-    absent subject relations as a non-null sentinel. That avoids SQLite's
-    nullable-composite-primary-key behavior and keeps upserts truly idempotent
-    for direct subjects.
-    """
+    """Stdlib SQLite MVCC implementation of ``RelationRepository``."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
         self._conn = sqlite3.connect(db_path)
@@ -43,115 +47,251 @@ class SQLiteRelationRepository(RelationRepository):
         with self._conn:
             self._conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS relation_tuples (
-                    tuple_key TEXT PRIMARY KEY,
-                    object_ns TEXT NOT NULL,
-                    object_id TEXT NOT NULL,
-                    relation TEXT NOT NULL,
-                    subject_ns TEXT NOT NULL,
-                    subject_id TEXT NOT NULL,
-                    subject_rel TEXT NOT NULL
+                CREATE TABLE IF NOT EXISTS revisions (
+                    revision INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 """
             )
             self._conn.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_rt_object
-                ON relation_tuples (object_ns, object_id, relation);
+                CREATE TABLE IF NOT EXISTS relation_tuples (
+                    tuple_key TEXT NOT NULL,
+                    object_ns TEXT NOT NULL,
+                    object_id TEXT NOT NULL,
+                    relation TEXT NOT NULL,
+                    subject_ns TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    subject_rel TEXT NOT NULL,
+                    created_revision INTEGER NOT NULL,
+                    deleted_revision INTEGER NULL,
+                    PRIMARY KEY (tuple_key, created_revision),
+                    FOREIGN KEY (created_revision) REFERENCES revisions(revision),
+                    FOREIGN KEY (deleted_revision) REFERENCES revisions(revision)
+                );
                 """
             )
             self._conn.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_rt_subject
-                ON relation_tuples (subject_ns, subject_id, subject_rel);
+                CREATE INDEX IF NOT EXISTS idx_rt_forward
+                ON relation_tuples (
+                    object_ns,
+                    object_id,
+                    relation,
+                    created_revision,
+                    deleted_revision
+                );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_rt_reverse
+                ON relation_tuples (
+                    subject_ns,
+                    subject_id,
+                    subject_rel,
+                    created_revision,
+                    deleted_revision
+                );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_rt_active_unique
+                ON relation_tuples (tuple_key)
+                WHERE deleted_revision IS NULL;
                 """
             )
 
-    def upsert(self, entity: RelationTuple) -> None:
-        row = StoredRelationTuple.from_tuple(entity)
+    def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
+        revision: Revision | None = None
+        changes: list[tuple[RelationTuple, RelationshipOperation]] = []
         with self._conn:
-            self._conn.execute(
-                f"""
-                INSERT INTO relation_tuples ({_INSERT_COLUMNS})
-                VALUES ({_INSERT_PLACEHOLDERS})
-                ON CONFLICT(tuple_key) DO NOTHING;
-                """,
-                row.as_values(),
-            )
+            for mutation in mutations:
+                if mutation.operation is RelationshipOperation.WRITE:
+                    if self._active_tuple(mutation.relation_tuple) is not None:
+                        continue
+                    revision = self._ensure_write_revision(revision)
+                    self._insert_tuple(mutation.relation_tuple, revision)
+                    changes.append((mutation.relation_tuple, mutation.operation))
+                    continue
 
-    def upsert_many(self, entities: Iterable[RelationTuple]) -> None:
-        rows = unique_stored_tuples(entities)
-        if not rows:
-            return None
-        with self._conn:
-            self._conn.executemany(
-                f"""
-                INSERT INTO relation_tuples ({_INSERT_COLUMNS})
-                VALUES ({_INSERT_PLACEHOLDERS})
-                ON CONFLICT(tuple_key) DO NOTHING;
-                """,
-                [row.as_values() for row in rows],
-            )
-        return None
+                if mutation.operation is RelationshipOperation.DELETE:
+                    active = self._active_tuple(mutation.relation_tuple)
+                    if active is None:
+                        continue
+                    revision = self._ensure_write_revision(revision)
+                    self._mark_tuple_deleted(mutation.relation_tuple, revision)
+                    changes.append((active, mutation.operation))
+                    continue
 
-    def delete_by_key(self, key: RelationTuple) -> bool:
-        with self._conn:
-            cursor = self._conn.execute(
-                "DELETE FROM relation_tuples WHERE tuple_key = ?",
-                (str(key),),
-            )
-        return cursor.rowcount > 0
-
-    def delete_many_by_key(self, keys: Iterable[RelationTuple]) -> int:
-        tuple_keys = list(dict.fromkeys(str(key) for key in keys))
-        deleted = 0
-        with self._conn:
-            for tuple_key in tuple_keys:
-                cursor = self._conn.execute(
-                    "DELETE FROM relation_tuples WHERE tuple_key = ?",
-                    (tuple_key,),
+                raise ValueError(
+                    f"unknown tuple mutation operation: {mutation.operation}"
                 )
-                deleted += int(cursor.rowcount > 0)
-        return deleted
+        return WriteResult(self.head_revision() if revision is None else revision)
 
-    def get(self, key: RelationTuple) -> RelationTuple | None:
+    def head_revision(self) -> Revision:
+        value = self._conn.execute(
+            "SELECT COALESCE(MAX(revision), 0) FROM revisions"
+        ).fetchone()[0]
+        return Revision(int(value))
+
+    def get(
+        self,
+        key: RelationTuple,
+        *,
+        revision: Revision,
+    ) -> RelationTuple | None:
+        self._raise_if_future_revision(revision)
         row = self._conn.execute(
             f"""
             SELECT {_SELECT_COLUMNS}
             FROM relation_tuples
-            WHERE tuple_key = ?
+            WHERE tuple_key = ? AND {_VISIBLE_AT}
             """,
-            (str(key),),
+            (str(key), revision.value, revision.value),
         ).fetchone()
         if row is None:
             return None
         return StoredRelationTuple.from_mapping(row).to_tuple()
 
-    def read(self, filter: TupleFilter) -> Iterable[RelationTuple]:
-        return self._select(filter)
+    def read(
+        self,
+        filter: TupleFilter,
+        *,
+        revision: Revision,
+    ) -> Iterable[RelationTuple]:
+        return self._select(filter, revision=revision)
 
-    def read_reverse(self, filter: TupleFilter) -> Iterable[RelationTuple]:
-        return self._select(filter)
+    def read_reverse(
+        self,
+        filter: TupleFilter,
+        *,
+        revision: Revision,
+    ) -> Iterable[RelationTuple]:
+        return self._select(filter, revision=revision)
 
-    def _select(self, filter: TupleFilter) -> list[RelationTuple]:
-        clauses: list[str] = []
-        params: list[str] = []
+    def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
+        self._raise_if_future_revision(after)
+        created = self._conn.execute(
+            f"""
+            SELECT {_SELECT_COLUMNS}, created_revision AS change_revision
+            FROM relation_tuples
+            WHERE created_revision > ?
+            """,
+            (after.value,),
+        ).fetchall()
+        deleted = self._conn.execute(
+            f"""
+            SELECT {_SELECT_COLUMNS}, deleted_revision AS change_revision
+            FROM relation_tuples
+            WHERE deleted_revision IS NOT NULL AND deleted_revision > ?
+            """,
+            (after.value,),
+        ).fetchall()
+        changes = [
+            (
+                int(row["change_revision"]),
+                RelationshipChange(
+                    revision=Revision(int(row["change_revision"])),
+                    relation_tuple=StoredRelationTuple.from_mapping(row).to_tuple(),
+                    operation=RelationshipOperation.WRITE,
+                ),
+            )
+            for row in created
+        ]
+        changes.extend(
+            (
+                int(row["change_revision"]),
+                RelationshipChange(
+                    revision=Revision(int(row["change_revision"])),
+                    relation_tuple=StoredRelationTuple.from_mapping(row).to_tuple(),
+                    operation=RelationshipOperation.DELETE,
+                ),
+            )
+            for row in deleted
+        )
+        for _, change in sorted(changes, key=lambda item: item[0]):
+            yield change
+
+    def info(self) -> dict[str, object]:
+        return {
+            "backend": "sqlite",
+            "head_revision": self.head_revision().value,
+            "columns": RELATION_TUPLE_COLUMNS,
+        }
+
+    def close(self) -> None:
+        with suppress(Exception):
+            self._conn.close()
+
+    def _select(
+        self,
+        filter: TupleFilter,
+        *,
+        revision: Revision,
+    ) -> list[RelationTuple]:
+        self._raise_if_future_revision(revision)
+        clauses = [_VISIBLE_AT]
+        params: list[str | int] = [revision.value, revision.value]
         for column, value in filter_values(filter):
             clauses.append(f"{column} = ?")
             params.append(value)
 
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         cursor = self._conn.execute(
             f"""
             SELECT {_SELECT_COLUMNS}
             FROM relation_tuples
-            {where}
-            ORDER BY tuple_key
+            WHERE {" AND ".join(clauses)}
+            ORDER BY tuple_key, created_revision
             """,
             params,
         )
         return [StoredRelationTuple.from_mapping(row).to_tuple() for row in cursor]
 
-    def close(self) -> None:
-        with suppress(Exception):
-            self._conn.close()
+    def _active_tuple(self, relation_tuple: RelationTuple) -> RelationTuple | None:
+        row = self._conn.execute(
+            f"""
+            SELECT {_SELECT_COLUMNS}
+            FROM relation_tuples
+            WHERE tuple_key = ? AND deleted_revision IS NULL
+            """,
+            (str(relation_tuple),),
+        ).fetchone()
+        if row is None:
+            return None
+        return StoredRelationTuple.from_mapping(row).to_tuple()
+
+    def _ensure_write_revision(self, revision: Revision | None) -> Revision:
+        if revision is not None:
+            return revision
+        cursor = self._conn.execute("INSERT INTO revisions DEFAULT VALUES")
+        return Revision(int(cursor.lastrowid))
+
+    def _insert_tuple(self, relation_tuple: RelationTuple, revision: Revision) -> None:
+        self._conn.execute(
+            f"""
+            INSERT INTO relation_tuples ({_INSERT_COLUMNS})
+            VALUES ({_INSERT_PLACEHOLDERS})
+            """,
+            stored_tuple_values(relation_tuple, created_revision=revision.value),
+        )
+
+    def _mark_tuple_deleted(
+        self,
+        relation_tuple: RelationTuple,
+        revision: Revision,
+    ) -> None:
+        self._conn.execute(
+            """
+            UPDATE relation_tuples
+            SET deleted_revision = ?
+            WHERE tuple_key = ? AND deleted_revision IS NULL
+            """,
+            (revision.value, str(relation_tuple)),
+        )
+
+    def _raise_if_future_revision(self, revision: Revision) -> None:
+        head = self.head_revision()
+        if revision > head:
+            raise ValueError(f"requested revision {revision} is newer than head {head}")

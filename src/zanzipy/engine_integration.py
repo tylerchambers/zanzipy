@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .models import Subject
     from .schema.registry import SchemaRegistry
     from .storage.repos.abstract.relations import RelationRepository
+    from .storage.revision import Consistency, WriteResult
 
 
 class ZanzibarEngine:
@@ -36,17 +37,47 @@ class ZanzibarEngine:
     def relations_repository(self) -> RelationRepository:
         return self._client.relations_repository
 
-    def write_tuple(self, *, subject: Subject, relation: str, resource: Obj) -> None:
-        self._client.write(str(resource), relation, str(subject))
+    def write_tuple(
+        self,
+        *,
+        subject: Subject,
+        relation: str,
+        resource: Obj,
+    ) -> WriteResult:
+        return self._client.write(str(resource), relation, str(subject))
 
-    def delete_tuple(self, *, subject: Subject, relation: str, resource: Obj) -> bool:
+    def delete_tuple(
+        self, *, subject: Subject, relation: str, resource: Obj
+    ) -> WriteResult:
         return self._client.delete(str(resource), relation, str(subject))
 
-    def check(self, *, subject: Subject, permission: str, resource: Obj) -> bool:
-        return self._client.check(str(resource), permission, str(subject))
+    def check(
+        self,
+        *,
+        subject: Subject,
+        permission: str,
+        resource: Obj,
+        consistency: Consistency | None = None,
+    ) -> bool:
+        return self._client.check(
+            str(resource),
+            permission,
+            str(subject),
+            consistency=consistency,
+        )
 
-    def expand(self, *, permission: str, resource: Obj) -> SubjectSet:
-        return self._client.expand(str(resource), permission)
+    def expand(
+        self,
+        *,
+        permission: str,
+        resource: Obj,
+        consistency: Consistency | None = None,
+    ) -> SubjectSet:
+        return self._client.expand(
+            str(resource),
+            permission,
+            consistency=consistency,
+        )
 
     def list_resources(
         self,
@@ -55,8 +86,14 @@ class ZanzibarEngine:
         permission: str,
         resource_type: str,
         limit: int | None = None,
+        consistency: Consistency | None = None,
     ) -> list[Obj]:
-        objects = self._client.list_objects(resource_type, permission, str(subject))
+        objects = self._client.list_objects(
+            resource_type,
+            permission,
+            str(subject),
+            consistency=consistency,
+        )
         if limit is not None:
             objects = objects[:limit]
         return [Obj.from_string(o) for o in objects]
@@ -66,11 +103,12 @@ class ZanzibarEngine:
         *,
         subject: Subject | None = None,
         resource: Obj | None = None,
+        consistency: Consistency | None = None,
     ) -> Iterable:
         if subject is None and resource is None:
             raise ValueError("At least one of subject or resource must be provided")
         filt = TupleFilter.from_parts(obj=resource, subject=subject)
-        return self._client.relations_repository.read(filt)
+        return self._client.read_tuples(filt, consistency=consistency)
 
     def list_direct_subjects(self, *, resource: Obj, relation: str) -> list[str]:
         return self._client.list_subjects_direct(str(resource), relation)

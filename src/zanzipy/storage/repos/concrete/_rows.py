@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 SUBJECT_RELATION_NONE = ""
 
-RELATION_TUPLE_COLUMNS = (
+LOGICAL_RELATION_TUPLE_COLUMNS = (
     "tuple_key",
     "object_ns",
     "object_id",
@@ -20,6 +20,11 @@ RELATION_TUPLE_COLUMNS = (
     "subject_ns",
     "subject_id",
     "subject_rel",
+)
+RELATION_TUPLE_COLUMNS = (
+    *LOGICAL_RELATION_TUPLE_COLUMNS,
+    "created_revision",
+    "deleted_revision",
 )
 
 _FILTER_COLUMNS = (
@@ -34,11 +39,7 @@ _FILTER_COLUMNS = (
 
 @dataclass(frozen=True, slots=True)
 class StoredRelationTuple:
-    """Database representation of a relation tuple.
-
-    ``subject_rel`` is always non-null in storage. The empty string represents a
-    direct subject because relation identifiers are validated as non-empty.
-    """
+    """Database representation of a relation tuple and its visibility window."""
 
     tuple_key: str
     object_ns: str
@@ -47,9 +48,17 @@ class StoredRelationTuple:
     subject_ns: str
     subject_id: str
     subject_rel: str
+    created_revision: int | None = None
+    deleted_revision: int | None = None
 
     @classmethod
-    def from_tuple(cls, tuple_: RelationTuple) -> StoredRelationTuple:
+    def from_tuple(
+        cls,
+        tuple_: RelationTuple,
+        *,
+        created_revision: int | None = None,
+        deleted_revision: int | None = None,
+    ) -> StoredRelationTuple:
         return cls(
             tuple_key=str(tuple_),
             object_ns=str(tuple_.object.namespace),
@@ -62,6 +71,8 @@ class StoredRelationTuple:
                 if tuple_.subject.relation is None
                 else str(tuple_.subject.relation)
             ),
+            created_revision=created_revision,
+            deleted_revision=deleted_revision,
         )
 
     @classmethod
@@ -77,9 +88,11 @@ class StoredRelationTuple:
             subject_rel=(
                 SUBJECT_RELATION_NONE if subject_rel is None else str(subject_rel)
             ),
+            created_revision=_optional_int(_mapping_value(row, "created_revision")),
+            deleted_revision=_optional_int(_mapping_value(row, "deleted_revision")),
         )
 
-    def as_values(self) -> dict[str, str]:
+    def as_values(self) -> dict[str, str | int | None]:
         """Return column values suitable for SQL parameter binding."""
 
         return {
@@ -90,6 +103,8 @@ class StoredRelationTuple:
             "subject_ns": self.subject_ns,
             "subject_id": self.subject_id,
             "subject_rel": self.subject_rel,
+            "created_revision": self.created_revision,
+            "deleted_revision": self.deleted_revision,
         }
 
     def to_tuple(self) -> RelationTuple:
@@ -104,6 +119,21 @@ class StoredRelationTuple:
                 None if self.subject_rel == SUBJECT_RELATION_NONE else self.subject_rel,
             ),
         )
+
+
+def stored_tuple_values(
+    tuple_: RelationTuple,
+    *,
+    created_revision: int,
+    deleted_revision: int | None = None,
+) -> dict[str, str | int | None]:
+    """Return storage values for ``tuple_`` at its visibility window."""
+
+    return StoredRelationTuple.from_tuple(
+        tuple_,
+        created_revision=created_revision,
+        deleted_revision=deleted_revision,
+    ).as_values()
 
 
 def unique_stored_tuples(tuples: Iterable[RelationTuple]) -> list[StoredRelationTuple]:
@@ -126,3 +156,16 @@ def filter_values(filter: TupleFilter) -> list[tuple[str, str]]:
             continue
         values.append((column_name, value))
     return values
+
+
+def _mapping_value(row: Mapping[str, object], key: str) -> object:
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return int(value)

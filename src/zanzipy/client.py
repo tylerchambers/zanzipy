@@ -12,9 +12,16 @@ from .models import (
     TupleFilter,
 )
 from .schema.relations import RelationDef
+from .storage.revision import (
+    Consistency,
+    Revision,
+    TupleMutation,
+    WriteResult,
+    revision_for_consistency,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from .schema.registry import SchemaRegistry
     from .schema.subjects import SubjectReference
@@ -26,22 +33,9 @@ class ZanzibarClient:
     """
     High-level, pythonic API over Zanzibar-style authorization primitives.
 
-    Responsibilities:
-    - Provide ergonomic helpers for writes, deletes, checks, and queries
-    - Validate operations against the registered schema
-    - Delegate evaluation to the CheckEngine (rules-aware)
-
-    Typical usage:
-        relations_repo = InMemoryRelationRepository()
-        registry = SchemaRegistry()
-        client = ZanzibarClient(
-            relations_repository=relations_repo,
-            schema=registry,
-        )
-
-        client.write("document:readme", "owner", "user:alice")
-        allowed = client.check("document:readme", "can_view", "user:alice")
-        docs = client.list_objects("document", "can_view", "user:alice")
+    All relation storage is revisioned. Convenience read APIs resolve to the
+    repository head revision by default; explicit revision APIs evaluate at the
+    supplied snapshot revision.
     """
 
     def __init__(
@@ -54,14 +48,14 @@ class ZanzibarClient:
         max_check_depth: int = 25,
         tuple_cache: TupleCache | None = None,
     ) -> None:
-        # Optionally wrap the relations repository with a cache decorator
         if tuple_cache is not None:
             from .storage.repos.decorators.cached_relations import (
                 CachedRelationRepository,
             )
 
             relations_repository = CachedRelationRepository(
-                backend=relations_repository, cache=tuple_cache
+                backend=relations_repository,
+                cache=tuple_cache,
             )
 
         self.relations_repository = relations_repository
@@ -85,109 +79,224 @@ class ZanzibarClient:
             max_depth=max_check_depth,
         )
 
-    def write(self, object: str, relation: str, subject: str) -> None:
-        """
-        Grant a relation tuple.
-
-        Args:
-            object: "type:id"
-            relation: relation name
-            subject: "type:id" or "type:id#relation"
-        """
+    def write(self, object: str, relation: str, subject: str) -> WriteResult:
+        """Grant a relation tuple and return the committed revision."""
 
         rt = RelationTuple.from_strings(object, relation, subject)
         self._validate_tuple_against_schema(rt)
-        self.relations_repository.write(rt)
+        return self.relations_repository.write((TupleMutation.touch(rt),))
 
-    def write_many(self, tuples: Sequence[tuple[str, str, str]]) -> None:
+    def write_many(self, tuples: Sequence[tuple[str, str, str]]) -> WriteResult:
         """Bulk grant: sequence of (object, relation, subject)."""
 
-        parsed: list[RelationTuple] = []
+        mutations: list[TupleMutation] = []
         for obj, rel, subj in tuples:
             rt = RelationTuple.from_strings(obj, rel, subj)
             self._validate_tuple_against_schema(rt)
-            parsed.append(rt)
-        self.relations_repository.write_many(parsed)
+            mutations.append(TupleMutation.touch(rt))
+        return self.relations_repository.write(mutations)
 
-    def delete(self, object: str, relation: str, subject: str) -> bool:
-        """Revoke a relation tuple. Returns True if a record was deleted."""
+    def delete(self, object: str, relation: str, subject: str) -> WriteResult:
+        """Revoke a relation tuple and return the committed revision."""
 
         rt = RelationTuple.from_strings(object, relation, subject)
-        # Allow deletes to proceed even if schema changed later; skip validation
-        return self.relations_repository.delete(rt)
+        return self.relations_repository.write((TupleMutation.delete(rt),))
 
-    def check(self, object: str, relation: str, subject: str) -> bool:
-        """
-        Check if a direct subject has relation/permission on an object.
+    def check(
+        self,
+        object: str,
+        relation: str,
+        subject: str,
+        *,
+        consistency: Consistency | None = None,
+    ) -> bool:
+        """Check if a direct subject has relation/permission on an object."""
 
-        The subject must be direct (no '#'); for subject-set anchors, expand to
-        a principal before calling.
-        """
+        revision = self._revision_for_consistency(consistency)
+        return self.check_at_revision(
+            object,
+            relation,
+            subject,
+            revision=revision,
+        )
+
+    def check_at_revision(
+        self,
+        object: str,
+        relation: str,
+        subject: str,
+        *,
+        revision: Revision,
+    ) -> bool:
+        """Check at an exact relation repository revision."""
 
         request = CheckRequest.from_strings(object, relation, subject)
-        response = self._check_engine.check(request)
+        response = self._check_engine.check(request, revision=revision)
         return response.allowed
 
-    def check_detailed(self, object: str, relation: str, subject: str) -> CheckResponse:
+    def check_detailed(
+        self,
+        object: str,
+        relation: str,
+        subject: str,
+        *,
+        consistency: Consistency | None = None,
+    ) -> CheckResponse:
         """Check and return full debugging info (trace, counters)."""
 
+        revision = self._revision_for_consistency(consistency)
+        return self.check_detailed_at_revision(
+            object,
+            relation,
+            subject,
+            revision=revision,
+        )
+
+    def check_detailed_at_revision(
+        self,
+        object: str,
+        relation: str,
+        subject: str,
+        *,
+        revision: Revision,
+    ) -> CheckResponse:
+        """Check at an exact revision and return debugging info."""
+
         request = CheckRequest.from_strings(object, relation, subject)
-        return self._check_engine.check(request)
+        return self._check_engine.check(request, revision=revision)
 
-    def list_objects(self, object_type: str, relation: str, subject: str) -> list[str]:
-        """
-        Enumerate objects of a type for which a direct subject is authorized.
+    def list_objects(
+        self,
+        object_type: str,
+        relation: str,
+        subject: str,
+        *,
+        consistency: Consistency | None = None,
+    ) -> list[str]:
+        """Enumerate objects of a type for which a direct subject is authorized."""
 
-        This consults the rules via the check engine for correctness:
-        - Candidates are discovered from existing tuples in the object namespace
-        - Each candidate object is verified using the full rules evaluation
-        """
+        revision = self._revision_for_consistency(consistency)
+        return self.list_objects_at_revision(
+            object_type,
+            relation,
+            subject,
+            revision=revision,
+        )
+
+    def list_objects_at_revision(
+        self,
+        object_type: str,
+        relation: str,
+        subject: str,
+        *,
+        revision: Revision,
+    ) -> list[str]:
+        """Enumerate authorized objects at an exact revision."""
 
         Subject.from_string(subject).require_direct()
-        # Discover candidate object ids from tuples in this namespace
         candidates: set[str] = set()
-        for t in self.relations_repository.find(TupleFilter(object_type=object_type)):
+        for t in self.relations_repository.read(
+            TupleFilter(object_type=object_type),
+            revision=revision,
+        ):
             candidates.add(str(t.object.id))
 
-        # Verify each candidate using a full check (rules-aware)
         results: list[str] = []
         for object_id in sorted(candidates):
             obj_str = f"{object_type}:{object_id}"
-            if self.check(obj_str, relation, subject):
+            request = CheckRequest.from_strings(obj_str, relation, subject)
+            if self._check_engine.check(request, revision=revision).allowed:
                 results.append(obj_str)
         return results
 
-    def list_subjects_direct(self, object: str, relation: str) -> list[str]:
-        """
-        List direct subjects for an object's relation (no rewrite expansion).
+    def list_subjects_direct(
+        self,
+        object: str,
+        relation: str,
+        *,
+        consistency: Consistency | None = None,
+    ) -> list[str]:
+        """List direct subjects for an object's relation at the resolved revision."""
 
-        Returns strings in canonical form: 'ns:id' or 'ns:id#rel'.
-        """
+        revision = self._revision_for_consistency(consistency)
+        return self.list_subjects_direct_at_revision(
+            object,
+            relation,
+            revision=revision,
+        )
+
+    def list_subjects_direct_at_revision(
+        self,
+        object: str,
+        relation: str,
+        *,
+        revision: Revision,
+    ) -> list[str]:
+        """List direct subjects for an object's relation at an exact revision."""
 
         obj = Obj.from_string(object)
         direct = []
         for t in self.relations_repository.read(
-            TupleFilter.from_parts(obj=obj, relation=Relation(relation))
+            TupleFilter.from_parts(obj=obj, relation=Relation(relation)),
+            revision=revision,
         ):
             direct.append(str(t.subject))
         return direct
 
-    def expand(self, object: str, relation: str) -> SubjectSet:
-        """
-        Expand a relation/permission into the set of subjects that grant it.
+    def expand(
+        self,
+        object: str,
+        relation: str,
+        *,
+        consistency: Consistency | None = None,
+    ) -> SubjectSet:
+        """Expand a relation/permission into subjects at the resolved revision."""
 
-        Returns a SubjectSet with two buckets:
-        - users: direct principals in 'user:...' form
-        - usersets: subject-set anchors like 'group:eng#member' and also
-          non-'user' direct principals in 'ns:id' form
-        """
+        revision = self._revision_for_consistency(consistency)
+        return self.expand_at_revision(object, relation, revision=revision)
+
+    def expand_at_revision(
+        self,
+        object: str,
+        relation: str,
+        *,
+        revision: Revision,
+    ) -> SubjectSet:
+        """Expand a relation/permission into subjects at an exact revision."""
 
         obj = Obj.from_string(object)
         return self._expansion_engine.expand(
             object_type=str(obj.namespace),
             object_id=str(obj.id),
             relation=relation,
+            revision=revision,
         )
+
+    def read_tuples(
+        self,
+        filter: TupleFilter,
+        *,
+        consistency: Consistency | None = None,
+    ) -> Iterable[RelationTuple]:
+        """Read tuples matching ``filter`` at the requested consistency."""
+
+        revision = self._revision_for_consistency(consistency)
+        return self.relations_repository.read(filter, revision=revision)
+
+    def read_tuples_at_revision(
+        self,
+        filter: TupleFilter,
+        *,
+        revision: Revision,
+    ) -> Iterable[RelationTuple]:
+        """Read tuples matching ``filter`` at an exact revision."""
+
+        return self.relations_repository.read(filter, revision=revision)
+
+    def head_revision(self) -> Revision:
+        """Return the latest relation repository revision."""
+
+        return self.relations_repository.head_revision()
 
     def ping(self) -> bool:
         """Lightweight health check across dependencies."""
@@ -199,13 +308,17 @@ class ZanzibarClient:
 
         self.relations_repository.close()
 
+    def _revision_for_consistency(
+        self,
+        consistency: Consistency | None,
+    ) -> Revision:
+        return revision_for_consistency(
+            self.relations_repository.head_revision(),
+            consistency,
+        )
+
     def _validate_tuple_against_schema(self, rt: RelationTuple) -> None:
-        """
-        Ensure a tuple write conforms to schema:
-        - Object namespace exists
-        - Relation exists and is a relation (not a permission)
-        - Subject type (and optional relation) is allowed
-        """
+        """Ensure a tuple write conforms to schema."""
 
         object_ns = str(rt.object.namespace)
         relation_name = str(rt.relation)

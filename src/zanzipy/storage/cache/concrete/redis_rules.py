@@ -68,14 +68,14 @@ class RedisCompiledRuleCache(CompiledRuleCache[RewriteRule]):
         self._codec = codec if codec is not None else DefaultRedisCompiledRuleCodec()
 
     def get(self, namespace: str, name: str) -> RewriteRule | None:
-        key = self._codec.key_for_rule(namespace, name)
-        raw = self._client.get(key)
+        token = self._codec.key_for_rule(namespace, name)
+        raw = self._client.get(token)
         if raw is None:
             return None
         try:
             return self._codec.decode(raw)
         except Exception:
-            self._client.delete(key)
+            self._client.delete(token)
             return None
 
     def set(self, namespace: str, name: str, compiled: RewriteRule) -> None:

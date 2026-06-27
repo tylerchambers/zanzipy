@@ -1,82 +1,75 @@
 from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
+from zanzipy.storage.revision import Revision, TupleMutation, WriteResult
 
 
 class TestInMemoryRelationRepository:
-    def test_write_and_get_and_exists(self) -> None:
+    def test_write_delete_and_readd_create_snapshot_windows(self) -> None:
         repo = InMemoryRelationRepository()
-        t = RelationTuple.from_string("document:doc1#owner@user:alice")
+        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
-        repo.write(t)
-        repo.write(t)
+        initial = repo.head_revision()
+        write = repo.write((TupleMutation.touch(t),))
+        noop = repo.write((TupleMutation.touch(t),))
+        delete = repo.write((TupleMutation.delete(t),))
+        readd = repo.write((TupleMutation.touch(t),))
 
-        assert repo.get(t) == t
-        assert repo.exists(t)
-        assert list(repo.read(TupleFilter())) == [t]
+        assert isinstance(write, WriteResult)
+        assert initial == Revision(0)
+        assert write.revision == Revision(1)
+        assert noop.revision == write.revision
+        assert delete.revision == Revision(2)
+        assert readd.revision == Revision(3)
+        assert repo.head_revision() == readd.revision
 
-    def test_delete_and_delete_by_key(self) -> None:
+        assert repo.get(t, revision=initial) is None
+        assert repo.get(t, revision=write.revision) == t
+        assert repo.get(t, revision=delete.revision) is None
+        assert repo.get(t, revision=readd.revision) == t
+
+    def test_read_and_read_reverse_respect_revision(self) -> None:
         repo = InMemoryRelationRepository()
-        t = RelationTuple.from_string("document:doc1#viewer@user:bob")
-        repo.write(t)
+        viewer = RelationTuple.from_string("document:doc1#viewer@user:alice")
+        owner = RelationTuple.from_string("document:doc1#owner@user:bob")
 
-        assert repo.delete(t) is True
-        assert repo.delete_by_key(t) is False
-        assert repo.get(t) is None
+        initial = repo.head_revision()
+        write = repo.write((TupleMutation.touch(viewer), TupleMutation.touch(owner)))
+        delete = repo.write((TupleMutation.delete(viewer),))
 
-    def test_find_forward_by_object_and_relation(self) -> None:
-        repo = InMemoryRelationRepository()
-        t1 = RelationTuple.from_string("document:doc1#viewer@user:bob")
-        t2 = RelationTuple.from_string("document:doc1#owner@user:alice")
-        t3 = RelationTuple.from_string("document:doc2#viewer@user:bob")
-        repo.write_many([t1, t2, t3])
-
-        results = list(repo.read(TupleFilter(object_type="document", object_id="doc1")))
-        assert results == [t1, t2]
-
-        results = list(repo.read(TupleFilter(relation="viewer")))
-        assert results == [t1, t3]
-
-    def test_reverse_read_applies_all_filter_fields(self) -> None:
-        repo = InMemoryRelationRepository()
-        t1 = RelationTuple.from_string("document:doc1#viewer@user:bob")
-        t2 = RelationTuple.from_string("document:doc2#owner@user:bob")
-        t3 = RelationTuple.from_string("document:doc3#viewer@user:alice")
-        repo.write_many([t1, t2, t3])
-
-        results = list(
+        assert list(repo.read(TupleFilter(), revision=initial)) == []
+        assert list(
+            repo.read(
+                TupleFilter(object_type="document", object_id="doc1"),
+                revision=write.revision,
+            )
+        ) == [viewer, owner]
+        assert list(
             repo.read_reverse(
-                TupleFilter(
-                    subject_type="user",
-                    subject_id="bob",
-                    relation="viewer",
+                TupleFilter(subject_type="user", subject_id="alice"),
+                revision=write.revision,
+            )
+        ) == [viewer]
+        assert (
+            list(
+                repo.read_reverse(
+                    TupleFilter(subject_type="user", subject_id="alice"),
+                    revision=delete.revision,
                 )
             )
+            == []
         )
-        assert results == [t1]
+        assert list(repo.by_object(viewer.object, revision=delete.revision)) == [owner]
 
-    def test_reverse_read_can_match_direct_subject_exactly(self) -> None:
+    def test_watch_returns_committed_changes_after_revision(self) -> None:
         repo = InMemoryRelationRepository()
-        direct = RelationTuple.from_string("document:doc1#viewer@group:eng")
-        userset = RelationTuple.from_string("document:doc2#viewer@group:eng#member")
-        repo.write_many([direct, userset])
+        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
-        assert list(repo.read_reverse(TupleFilter.from_subject(direct.subject))) == [
-            direct
+        write = repo.write((TupleMutation.touch(t),))
+        delete = repo.write((TupleMutation.delete(t),))
+
+        changes = list(repo.watch(after=Revision(0)))
+        assert [change.revision for change in changes] == [
+            write.revision,
+            delete.revision,
         ]
-        assert list(
-            repo.read_reverse(TupleFilter(subject_type="group", subject_id="eng"))
-        ) == [
-            direct,
-            userset,
-        ]
-
-    def test_delete_where(self) -> None:
-        repo = InMemoryRelationRepository()
-        t1 = RelationTuple.from_string("document:doc1#viewer@user:bob")
-        t2 = RelationTuple.from_string("document:doc1#owner@user:alice")
-        t3 = RelationTuple.from_string("document:doc2#viewer@user:bob")
-        repo.write_many([t1, t2, t3])
-
-        deleted = repo.delete_where(TupleFilter(object_id="doc1"))
-        assert deleted == 2
-        assert list(repo.read(TupleFilter())) == [t3]
+        assert [change.relation_tuple for change in changes] == [t, t]

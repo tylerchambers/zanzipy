@@ -2,7 +2,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from zanzipy.engine.resolver import RuleResolver
-from zanzipy.models import CheckRequest, CheckResponse, EntityId, NamespaceId, Obj
+from zanzipy.models import (
+    CheckRequest,
+    CheckResponse,
+    EntityId,
+    NamespaceId,
+    Obj,
+    TupleFilter,
+)
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
@@ -18,6 +25,7 @@ if TYPE_CHECKING:
     from zanzipy.schema.registry import SchemaRegistry
     from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
     from zanzipy.storage.repos.abstract.relations import RelationRepository
+    from zanzipy.storage.revision import Revision
 
 
 @dataclass(slots=True)
@@ -59,11 +67,17 @@ class CheckEngine:
             compiled_rules_cache=compiled_rules_cache,
         )
 
-    def check(self, request: CheckRequest) -> CheckResponse:
+    def check(
+        self,
+        request: CheckRequest,
+        *,
+        revision: Revision | None = None,
+    ) -> CheckResponse:
         """
         Main entry point for permission checks.
         Returns immediately on first positive result.
         """
+        revision = self._relations.head_revision() if revision is None else revision
         visited: set[tuple[str, str, str, str, str]] = set()
         debug_trace: list[str] | None = [] if self._enable_debug else None
         counters = _Counters()
@@ -74,6 +88,7 @@ class CheckEngine:
             relation=request.relation,
             subject_type=request.subject_type,
             subject_id=request.subject_id,
+            revision=revision,
             depth=0,
             visited=visited,
             debug_trace=debug_trace,
@@ -95,6 +110,7 @@ class CheckEngine:
         relation: str,
         subject_type: str,
         subject_id: str,
+        revision: Revision,
         depth: int,
         visited: set[tuple[str, str, str, str, str]],
         debug_trace: list[str] | None,
@@ -134,6 +150,7 @@ class CheckEngine:
                 object_id=object_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth,
                 visited=visited,
                 debug_trace=debug_trace,
@@ -151,6 +168,7 @@ class CheckEngine:
         object_id: str,
         subject_type: str,
         subject_id: str,
+        revision: Revision,
         depth: int,
         visited: set[tuple[str, str, str, str, str]],
         debug_trace: list[str] | None,
@@ -165,6 +183,7 @@ class CheckEngine:
                 object_id=object_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth,
                 visited=visited,
                 debug_trace=debug_trace,
@@ -178,6 +197,7 @@ class CheckEngine:
                 object_id=object_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth,
                 visited=visited,
                 debug_trace=debug_trace,
@@ -192,6 +212,7 @@ class CheckEngine:
                 relation=rewrite.relation,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
                 debug_trace=debug_trace,
@@ -206,6 +227,7 @@ class CheckEngine:
                 computed_relation=rewrite.computed_relation,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth,
                 visited=visited,
                 debug_trace=debug_trace,
@@ -220,6 +242,7 @@ class CheckEngine:
                     object_id=object_id,
                     subject_type=subject_type,
                     subject_id=subject_id,
+                    revision=revision,
                     depth=depth + 1,
                     visited=visited,
                     debug_trace=debug_trace,
@@ -237,6 +260,7 @@ class CheckEngine:
                     object_id=object_id,
                     subject_type=subject_type,
                     subject_id=subject_id,
+                    revision=revision,
                     depth=depth + 1,
                     visited=visited,
                     debug_trace=debug_trace,
@@ -254,6 +278,7 @@ class CheckEngine:
                 object_id=object_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
                 debug_trace=debug_trace,
@@ -268,6 +293,7 @@ class CheckEngine:
                 object_id=object_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
                 debug_trace=debug_trace,
@@ -286,6 +312,7 @@ class CheckEngine:
         object_id: str,
         subject_type: str,
         subject_id: str,
+        revision: Revision,
         depth: int,
         visited: set[tuple[str, str, str, str, str]],
         debug_trace: list[str] | None,
@@ -301,7 +328,7 @@ class CheckEngine:
         """
 
         obj = Obj(NamespaceId(object_type), EntityId(object_id))
-        for t in self._relations.by_object(obj):
+        for t in self._relations.read(TupleFilter.from_object(obj), revision=revision):
             # Filter matching relation on the object
             if str(t.relation) != effective_relation:
                 continue
@@ -325,6 +352,7 @@ class CheckEngine:
                 relation=str(t.subject.relation),
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
                 debug_trace=debug_trace,
@@ -343,6 +371,7 @@ class CheckEngine:
         computed_relation: str,
         subject_type: str,
         subject_id: str,
+        revision: Revision,
         depth: int,
         visited: set[tuple[str, str, str, str, str]],
         debug_trace: list[str] | None,
@@ -356,7 +385,7 @@ class CheckEngine:
         """
 
         obj = Obj(NamespaceId(object_type), EntityId(object_id))
-        for t in self._relations.by_object(obj):
+        for t in self._relations.read(TupleFilter.from_object(obj), revision=revision):
             if str(t.relation) != tuple_relation:
                 continue
 
@@ -372,6 +401,7 @@ class CheckEngine:
                 relation=computed_relation,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
                 debug_trace=debug_trace,

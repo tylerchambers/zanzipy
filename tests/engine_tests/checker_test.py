@@ -18,6 +18,7 @@ from zanzipy.schema.types import SchemaDefinitionType
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
+from zanzipy.storage.revision import TupleMutation
 
 
 class TestCheckEngine:
@@ -36,7 +37,13 @@ class TestCheckEngine:
         registry.register(ns)
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("document:doc1#owner@user:alice"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc1#owner@user:alice")
+                ),
+            )
+        )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
@@ -81,8 +88,20 @@ class TestCheckEngine:
         registry.register(ns)
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("document:doc1#owner@user:alice"))
-        repo.write(RelationTuple.from_string("document:doc2#editor@user:carol"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc1#owner@user:alice")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc2#editor@user:carol")
+                ),
+            )
+        )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
@@ -147,13 +166,43 @@ class TestCheckEngine:
 
         repo = InMemoryRelationRepository()
         # alice is both owner and editor of doc1 -> can_edit
-        repo.write(RelationTuple.from_string("document:doc1#owner@user:alice"))
-        repo.write(RelationTuple.from_string("document:doc1#editor@user:alice"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc1#owner@user:alice")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc1#editor@user:alice")
+                ),
+            )
+        )
         # bob is only viewer of doc2 -> can_comment unless banned
-        repo.write(RelationTuple.from_string("document:doc2#viewer@user:bob"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc2#viewer@user:bob")
+                ),
+            )
+        )
         # carol viewer and banned on doc3 -> cannot comment
-        repo.write(RelationTuple.from_string("document:doc3#viewer@user:carol"))
-        repo.write(RelationTuple.from_string("document:doc3#banned@user:carol"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc3#viewer@user:carol")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc3#banned@user:carol")
+                ),
+            )
+        )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
@@ -201,7 +250,13 @@ class TestCheckEngine:
         registry.register(ns)
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("document:doc#owner@user:alice"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#owner@user:alice")
+                ),
+            )
+        )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
@@ -256,8 +311,20 @@ class TestCheckEngine:
 
         repo = InMemoryRelationRepository()
         # doc1 -> parent folder f1; folder f1 -> viewer alice
-        repo.write(RelationTuple.from_string("document:doc1#parent@folder:f1"))
-        repo.write(RelationTuple.from_string("folder:f1#viewer@user:alice"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc1#parent@folder:f1")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("folder:f1#viewer@user:alice")
+                ),
+            )
+        )
 
         engine = CheckEngine(relations_repository=repo, schema=registry)
 
@@ -527,7 +594,9 @@ class TestCheckEngine:
         registry.register(ns)
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("doc:1#viewer@user:alice"))
+        repo.write(
+            (TupleMutation.touch(RelationTuple.from_string("doc:1#viewer@user:alice")),)
+        )
 
         from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
 

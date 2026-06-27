@@ -2,6 +2,7 @@ from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.cache.concrete.lru import LruTupleCache
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
 from zanzipy.storage.repos.decorators.cached_relations import CachedRelationRepository
+from zanzipy.storage.revision import Revision, TupleMutation
 
 
 def _rt(
@@ -19,144 +20,99 @@ def _rt(
 
 
 class TestCachedRelationRepository:
-    def test_read_through_and_invalidation_object(self) -> None:
+    def test_object_cache_is_revision_scoped(self) -> None:
         backend = InMemoryRelationRepository()
         cache = LruTupleCache(max_entries=100, ttl_seconds=None)
         repo = CachedRelationRepository(backend, cache=cache)
 
-        t1 = _rt("doc", "1", "viewer", "user", "alice")
-        t2 = _rt("doc", "1", "editor", "user", "bob")
+        first = _rt("doc", "1", "viewer", "user", "alice")
+        second = _rt("doc", "1", "viewer", "user", "bob")
+        first_write = repo.write((TupleMutation.touch(first),))
 
-        backend.upsert(t1)
-        backend.upsert(t2)
+        assert list(repo.by_object(first.object, revision=first_write.revision)) == [
+            first
+        ]
 
-        obj = t1.object
-        assert list(repo.by_object(obj)) == [t1, t2]
+        second_write = repo.write((TupleMutation.touch(second),))
 
-        backend.delete_by_key(t1)
-        backend.delete_by_key(t2)
-        assert list(repo.by_object(obj)) == [t1, t2]
+        assert list(repo.by_object(first.object, revision=first_write.revision)) == [
+            first
+        ]
+        assert list(repo.by_object(first.object, revision=second_write.revision)) == [
+            first,
+            second,
+        ]
 
-        t3 = _rt("doc", "1", "owner", "user", "carol")
-        repo.upsert(t3)
-
-        assert list(repo.by_object(obj)) == [t3]
-
-    def test_reverse_read_through_and_invalidation_subject(self) -> None:
+    def test_subject_cache_is_revision_scoped(self) -> None:
         backend = InMemoryRelationRepository()
         cache = LruTupleCache(max_entries=100, ttl_seconds=None)
         repo = CachedRelationRepository(backend, cache=cache)
 
-        t1 = _rt("doc", "1", "viewer", "user", "alice")
-        t2 = _rt("doc", "2", "viewer", "user", "alice")
-        backend.upsert(t1)
-        backend.upsert(t2)
-
+        first = _rt("doc", "1", "viewer", "user", "alice")
+        second = _rt("doc", "2", "viewer", "user", "alice")
+        first_write = repo.write((TupleMutation.touch(first),))
+        second_write = repo.write((TupleMutation.touch(second),))
         filt = TupleFilter(subject_type="user", subject_id="alice")
-        assert list(repo.read_reverse(filt)) == [t1, t2]
 
-        backend.delete_by_key(t1)
-        backend.delete_by_key(t2)
-        assert list(repo.read_reverse(filt)) == [t1, t2]
+        assert list(repo.read_reverse(filt, revision=first_write.revision)) == [first]
+        assert list(repo.read_reverse(filt, revision=second_write.revision)) == [
+            first,
+            second,
+        ]
 
-        t3 = _rt("doc", "3", "viewer", "user", "alice")
-        repo.upsert(t3)
-        assert list(repo.read_reverse(filt)) == [t3]
+    def test_cache_does_not_return_deleted_tuple_at_newer_revision(self) -> None:
+        backend = InMemoryRelationRepository()
+        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
+        repo = CachedRelationRepository(backend, cache=cache)
 
-    def test_mixed_filter_bypasses_cache(self) -> None:
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        write = repo.write((TupleMutation.touch(tuple_),))
+        assert list(repo.by_object(tuple_.object, revision=write.revision)) == [tuple_]
+
+        delete = repo.write((TupleMutation.delete(tuple_),))
+
+        assert list(repo.by_object(tuple_.object, revision=write.revision)) == [tuple_]
+        assert list(repo.by_object(tuple_.object, revision=delete.revision)) == []
+
+    def test_mixed_filter_bypasses_cache_but_uses_revision(self) -> None:
         backend = InMemoryRelationRepository()
         cache = LruTupleCache(max_entries=100, ttl_seconds=None)
         repo = CachedRelationRepository(backend, cache=cache)
 
         t1 = _rt("doc", "1", "viewer", "user", "alice")
         t2 = _rt("doc", "1", "viewer", "group", "eng", "member")
-        backend.upsert(t1)
-        backend.upsert(t2)
+        write = repo.write((TupleMutation.touch(t1), TupleMutation.touch(t2)))
 
         mixed = TupleFilter(object_type="doc", subject_type="user")
-        assert list(repo.read(mixed)) == [t1]
+        assert list(repo.read(mixed, revision=write.revision)) == [t1]
 
-    def test_relation_filtered_reverse_read_caches_broad_subject_bucket(self) -> None:
-        backend = InMemoryRelationRepository()
-        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
-        repo = CachedRelationRepository(backend, cache=cache)
-
-        viewer = _rt("doc", "1", "viewer", "user", "alice")
-        owner = _rt("doc", "2", "owner", "user", "alice")
-        backend.write_many([viewer, owner])
-
-        filtered = TupleFilter(
-            subject_type="user",
-            subject_id="alice",
-            relation="viewer",
-        )
-        assert list(repo.read_reverse(filtered)) == [viewer]
-
-        backend.delete_many([viewer, owner])
-        broad = TupleFilter(subject_type="user", subject_id="alice")
-        assert list(repo.read_reverse(broad)) == [viewer, owner]
-
-    def test_direct_subject_filter_uses_broad_cache_but_returns_exact_match(
-        self,
-    ) -> None:
+    def test_direct_subject_filter_uses_broad_revision_bucket(self) -> None:
         backend = InMemoryRelationRepository()
         cache = LruTupleCache(max_entries=100, ttl_seconds=None)
         repo = CachedRelationRepository(backend, cache=cache)
 
         direct = _rt("doc", "1", "viewer", "group", "eng")
         userset = _rt("doc", "2", "viewer", "group", "eng", "member")
-        backend.write_many([direct, userset])
+        write = repo.write((TupleMutation.touch(direct), TupleMutation.touch(userset)))
 
         exact = TupleFilter.from_subject(direct.subject)
-        assert list(repo.read_reverse(exact)) == [direct]
-
-        backend.delete_many([direct, userset])
         broad = TupleFilter(subject_type="group", subject_id="eng")
-        assert list(repo.read_reverse(broad)) == [direct, userset]
-
-    def test_subject_set_write_invalidates_broad_subject_bucket(self) -> None:
-        backend = InMemoryRelationRepository()
-        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
-        repo = CachedRelationRepository(backend, cache=cache)
-
-        first = _rt("doc", "1", "viewer", "group", "eng", "member")
-        backend.write(first)
-        broad = TupleFilter(subject_type="group", subject_id="eng")
-        assert list(repo.read_reverse(broad)) == [first]
-
-        backend.delete(first)
-        second = _rt("doc", "2", "viewer", "group", "eng", "member")
-        repo.write(second)
-
-        assert list(repo.read_reverse(broad)) == [second]
-
-    def test_subject_set_delete_invalidates_broad_subject_bucket(self) -> None:
-        backend = InMemoryRelationRepository()
-        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
-        repo = CachedRelationRepository(backend, cache=cache)
-
-        stale = _rt("doc", "1", "viewer", "group", "eng", "member")
-        backend.write(stale)
-        broad = TupleFilter(subject_type="group", subject_id="eng")
-        assert list(repo.read_reverse(broad)) == [stale]
-
-        assert repo.delete(stale) is True
-        assert list(repo.read_reverse(broad)) == []
-
-    def test_delete_many_by_key_materializes_generator(self) -> None:
-        backend = InMemoryRelationRepository()
-        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
-        repo = CachedRelationRepository(backend, cache=cache)
-
-        tuples = [
-            _rt("doc", "1", "viewer", "user", "alice"),
-            _rt("doc", "2", "viewer", "user", "alice"),
+        assert list(repo.read_reverse(exact, revision=write.revision)) == [direct]
+        assert list(repo.read_reverse(broad, revision=write.revision)) == [
+            direct,
+            userset,
         ]
-        repo.write_many(tuples)
-        filt = TupleFilter(subject_type="user", subject_id="alice")
-        assert list(repo.read_reverse(filt)) == tuples
 
-        deleted = repo.delete_many_by_key(tuple_ for tuple_ in tuples)
+    def test_watch_delegates_to_backend(self) -> None:
+        backend = InMemoryRelationRepository()
+        repo = CachedRelationRepository(
+            backend,
+            cache=LruTupleCache(max_entries=100, ttl_seconds=None),
+        )
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        write = repo.write((TupleMutation.touch(tuple_),))
 
-        assert deleted == 2
-        assert list(repo.read_reverse(filt)) == []
+        changes = list(repo.watch(after=Revision(0)))
+
+        assert [change.revision for change in changes] == [write.revision]
+        assert [change.relation_tuple for change in changes] == [tuple_]

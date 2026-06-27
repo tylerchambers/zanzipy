@@ -1,6 +1,7 @@
 import pytest
 
 from zanzipy.client import ZanzibarClient
+from zanzipy.models import TupleFilter
 from zanzipy.models.errors import IdentifierValidationError, InvalidTupleFormatError
 from zanzipy.models.tuple import RelationTuple
 from zanzipy.schema.namespace import NamespaceDef
@@ -12,6 +13,7 @@ from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
+from zanzipy.storage.revision import Revision, WriteResult
 
 
 class TestZanzibarClient:
@@ -74,8 +76,12 @@ class TestZanzibarClient:
         repo = InMemoryRelationRepository()
         client = ZanzibarClient(relations_repository=repo, schema=registry)
 
-        client.write("document:doc1", "owner", "user:alice")
-        assert repo.get(RelationTuple.from_string("document:doc1#owner@user:alice"))
+        write = client.write("document:doc1", "owner", "user:alice")
+        assert isinstance(write, WriteResult)
+        assert repo.get(
+            RelationTuple.from_string("document:doc1#owner@user:alice"),
+            revision=write.revision,
+        )
 
         assert client.check("document:doc1", "owner", "user:alice") is True
         assert client.check("document:doc1", "owner", "user:bob") is False
@@ -160,10 +166,7 @@ class TestZanzibarClient:
         ]
         with pytest.raises(ValueError, match="Subject not allowed by schema"):
             client.write_many(tuples)
-        # No tuples persisted
-        assert (
-            list(repo.find(object())) == []  # type: ignore
-        )  # TupleFilter fields all None analogue
+        assert list(repo.read(TupleFilter(), revision=repo.head_revision())) == []
 
         # All good -> both written
         client.write_many(
@@ -175,15 +178,21 @@ class TestZanzibarClient:
         assert client.check("document:a", "owner", "user:alice") is True
         assert client.check("document:b", "owner", "user:alice") is True
 
-    def test_delete_returns_bool(self) -> None:
+    def test_delete_returns_write_result(self) -> None:
         registry = self._base_registry()
         repo = InMemoryRelationRepository()
         client = ZanzibarClient(relations_repository=repo, schema=registry)
 
-        client.write("document:doc1", "owner", "user:alice")
-        assert client.delete("document:doc1", "owner", "user:alice") is True
-        # Deleting again should return False
-        assert client.delete("document:doc1", "owner", "user:alice") is False
+        write = client.write("document:doc1", "owner", "user:alice")
+        delete = client.delete("document:doc1", "owner", "user:alice")
+        second_delete = client.delete("document:doc1", "owner", "user:alice")
+        tuple_ = RelationTuple.from_string("document:doc1#owner@user:alice")
+
+        assert delete.revision > write.revision
+        assert second_delete.revision == delete.revision
+        assert repo.get(tuple_, revision=write.revision) == tuple_
+        assert repo.get(tuple_, revision=delete.revision) is None
+        assert repo.head_revision() == Revision(2)
 
     def test_check_rejects_subject_sets(self) -> None:
         registry = self._base_registry()

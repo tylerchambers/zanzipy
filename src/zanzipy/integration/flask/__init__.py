@@ -153,10 +153,10 @@ class Zanzibar:
     def check(self, *args: Any, **kwargs: Any) -> bool:
         return self._require_state().client.check(*args, **kwargs)
 
-    def write(self, *args: Any, **kwargs: Any) -> None:
-        self._require_state().client.write(*args, **kwargs)
+    def write(self, *args: Any, **kwargs: Any) -> Any:
+        return self._require_state().client.write(*args, **kwargs)
 
-    def delete(self, *args: Any, **kwargs: Any) -> bool:
+    def delete(self, *args: Any, **kwargs: Any) -> Any:
         return self._require_state().client.delete(*args, **kwargs)
 
     def expand(self, *args: Any, **kwargs: Any) -> Any:

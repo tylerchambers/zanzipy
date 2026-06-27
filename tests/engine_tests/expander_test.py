@@ -20,6 +20,7 @@ from zanzipy.schema.types import SchemaDefinitionType
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
+from zanzipy.storage.revision import TupleMutation
 
 
 class TestExpansionEngine:
@@ -53,9 +54,27 @@ class TestExpansionEngine:
         registry.register_many([ns, group])
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("document:doc#owner@user:alice"))
-        repo.write(RelationTuple.from_string("document:doc#owner@user:bob"))
-        repo.write(RelationTuple.from_string("document:doc#owner@group:eng#member"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#owner@user:alice")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#owner@user:bob")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#owner@group:eng#member")
+                ),
+            )
+        )
 
         engine = ExpansionEngine(
             relations_repository=repo,
@@ -114,10 +133,34 @@ class TestExpansionEngine:
         registry.register(ns)
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("document:d#owner@user:alice"))
-        repo.write(RelationTuple.from_string("document:d#editor@user:carol"))
-        repo.write(RelationTuple.from_string("document:d#viewer@user:bob"))
-        repo.write(RelationTuple.from_string("document:d#banned@user:carol"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:d#owner@user:alice")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:d#editor@user:carol")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:d#viewer@user:bob")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:d#banned@user:carol")
+                ),
+            )
+        )
 
         engine = ExpansionEngine(
             relations_repository=repo,
@@ -168,7 +211,13 @@ class TestExpansionEngine:
         registry.register(ns)
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("document:doc#owner@user:alice"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#owner@user:alice")
+                ),
+            )
+        )
 
         engine = ExpansionEngine(relations_repository=repo, schema=registry)
 
@@ -234,11 +283,41 @@ class TestExpansionEngine:
         registry.register_many([group_ns, document_ns])
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("group:eng#member@user:alice"))
-        repo.write(RelationTuple.from_string("group:eng#member@user:bob"))
-        repo.write(RelationTuple.from_string("document:doc#owner@user:alice"))
-        repo.write(RelationTuple.from_string("document:doc#viewer@group:eng#member"))
-        repo.write(RelationTuple.from_string("document:doc#banned@user:alice"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("group:eng#member@user:alice")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("group:eng#member@user:bob")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#owner@user:alice")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#viewer@group:eng#member")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#banned@user:alice")
+                ),
+            )
+        )
 
         engine = ExpansionEngine(relations_repository=repo, schema=registry)
 
@@ -285,8 +364,20 @@ class TestExpansionEngine:
         registry.register_many([folder_ns, document_ns])
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("document:doc#parent@folder:f1"))
-        repo.write(RelationTuple.from_string("folder:f1#viewer@user:alice"))
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#parent@folder:f1")
+                ),
+            )
+        )
+        repo.write(
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("folder:f1#viewer@user:alice")
+                ),
+            )
+        )
 
         engine = ExpansionEngine(
             relations_repository=repo,
@@ -444,7 +535,9 @@ class TestExpansionEngine:
         registry.register(ns)
 
         repo = InMemoryRelationRepository()
-        repo.write(RelationTuple.from_string("doc:1#viewer@user:alice"))
+        repo.write(
+            (TupleMutation.touch(RelationTuple.from_string("doc:1#viewer@user:alice")),)
+        )
 
         from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
 
