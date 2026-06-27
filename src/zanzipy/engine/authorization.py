@@ -7,7 +7,12 @@ from zanzipy.schema.compiled import CompiledAuthorizationModel
 
 if TYPE_CHECKING:
     from zanzipy.engine.expander import SubjectSet
-    from zanzipy.models import CheckRequest, CheckResponse, Obj, Subject
+    from zanzipy.models import (
+        CheckRequest,
+        CheckResponse,
+        LookupResourcesRequest,
+        LookupResourcesResponse,
+    )
     from zanzipy.schema.registry import SchemaRegistry
     from zanzipy.schema.rules import RewriteRule
     from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
@@ -74,6 +79,7 @@ class AuthorizationEngine:
             relations_repository=relations_repository,
             authorization_model=authorization_model,
             max_depth=max_depth,
+            enable_debug=enable_debug,
         )
 
     @property
@@ -102,7 +108,7 @@ class AuthorizationEngine:
 
     @property
     def enable_debug(self) -> bool:
-        """Return whether check diagnostics are enabled for this boundary."""
+        """Return whether traversal diagnostics are enabled for this boundary."""
 
         return self._enable_debug
 
@@ -130,17 +136,10 @@ class AuthorizationEngine:
 
     def lookup_resources(
         self,
+        request: LookupResourcesRequest,
         *,
-        resource_type: str,
-        permission: str,
-        subject: Subject,
         context: ReadContext,
-    ) -> list[Obj]:
-        """Return resources granting ``permission`` to ``subject``."""
+    ) -> LookupResourcesResponse:
+        """Evaluate one typed LookupResources request at the supplied context."""
 
-        return self._lookup.lookup_resources(
-            resource_type=resource_type,
-            permission=permission,
-            subject=subject,
-            context=context,
-        )
+        return self._lookup.lookup_resources(request, context=context)

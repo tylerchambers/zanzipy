@@ -1,5 +1,5 @@
 from zanzipy.engine.authorization import AuthorizationEngine
-from zanzipy.models import CheckRequest, RelationTuple, Subject
+from zanzipy.models import CheckRequest, LookupResourcesRequest, RelationTuple, Subject
 from zanzipy.schema.compiled import CompiledAuthorizationModel
 from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
@@ -125,9 +125,11 @@ def test_authorization_engine_shares_depth_and_debug_across_operations() -> None
     )
     expanded = engine.expand("document", "doc1", "can_view", context=context)
     resources = engine.lookup_resources(
-        resource_type="document",
-        permission="can_view",
-        subject=Subject.from_string("user:alice"),
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="can_view",
+            subject=Subject.from_string("user:alice"),
+        ),
         context=context,
     )
 
@@ -140,7 +142,36 @@ def test_authorization_engine_shares_depth_and_debug_across_operations() -> None
     assert any("Max depth reached" in line for line in response.debug_trace)
     assert expanded.users == set()
     assert expanded.usersets == set()
-    assert resources == []
+    assert resources.resources == ()
+
+
+def test_lookup_resources_response_includes_debug_and_counters() -> None:
+    registry = _registry()
+    repo = _repo_with_owner()
+    engine = AuthorizationEngine(
+        relations_repository=repo,
+        schema=registry,
+        enable_debug=True,
+    )
+    context = _context(repo)
+
+    response = engine.lookup_resources(
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="owner",
+            subject=Subject.from_string("user:alice"),
+        ),
+        context=context,
+    )
+
+    assert [str(resource) for resource in response.resources] == ["document:doc1"]
+    assert response.debug_trace is not None
+    assert response.debug_trace[0] == "context tenant=default revision=1"
+    assert any(
+        "matched resource: document:doc1" in line for line in response.debug_trace
+    )
+    assert response.depth_reached == 0
+    assert response.tuples_examined == 1
 
 
 def test_authorization_engine_owns_tuple_cache_decorator() -> None:
@@ -175,12 +206,14 @@ def test_authorization_engine_owns_tuple_cache_decorator() -> None:
     assert expand_hits == check_hits + 1
 
     resources = engine.lookup_resources(
-        resource_type="document",
-        permission="owner",
-        subject=Subject.from_string("user:alice"),
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="owner",
+            subject=Subject.from_string("user:alice"),
+        ),
         context=context,
     )
-    assert [str(resource) for resource in resources] == ["document:doc1"]
+    assert [str(resource) for resource in resources.resources] == ["document:doc1"]
 
     after_lookup = cache.info()
     subject_bucket_count = after_lookup["size_subjects"]
@@ -190,13 +223,15 @@ def test_authorization_engine_owns_tuple_cache_decorator() -> None:
     assert subject_bucket_count > 0
 
     resources = engine.lookup_resources(
-        resource_type="document",
-        permission="owner",
-        subject=Subject.from_string("user:alice"),
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="owner",
+            subject=Subject.from_string("user:alice"),
+        ),
         context=context,
     )
     final_hits = cache.info()["hits"]
-    assert [str(resource) for resource in resources] == ["document:doc1"]
+    assert [str(resource) for resource in resources.resources] == ["document:doc1"]
     assert isinstance(final_hits, int)
     assert final_hits > lookup_hits
 
@@ -225,15 +260,17 @@ def test_authorization_engine_shares_compiled_model_across_operations() -> None:
     )
     expanded = engine.expand("document", "doc1", "can_view", context=context)
     resources = engine.lookup_resources(
-        resource_type="document",
-        permission="can_view",
-        subject=Subject.from_string("user:alice"),
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="can_view",
+            subject=Subject.from_string("user:alice"),
+        ),
         context=context,
     )
 
     assert response.allowed is True
     assert expanded.users == {"user:alice"}
-    assert [str(resource) for resource in resources] == ["document:doc1"]
+    assert [str(resource) for resource in resources.resources] == ["document:doc1"]
     assert engine.authorization_model.resolve("document", "can_view") is cached
 
 
@@ -285,9 +322,11 @@ def test_authorization_engine_rebuild_refreshes_lookup_metadata() -> None:
     )
 
     old_resources = old_engine.lookup_resources(
-        resource_type="document",
-        permission="can_view",
-        subject=Subject.from_string("user:alice"),
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="can_view",
+            subject=Subject.from_string("user:alice"),
+        ),
         context=context,
     )
     rebuilt_engine = AuthorizationEngine(
@@ -295,17 +334,19 @@ def test_authorization_engine_rebuild_refreshes_lookup_metadata() -> None:
         schema=registry,
     )
     rebuilt_resources = rebuilt_engine.lookup_resources(
-        resource_type="document",
-        permission="can_view",
-        subject=Subject.from_string("user:alice"),
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="can_view",
+            subject=Subject.from_string("user:alice"),
+        ),
         context=context,
     )
 
-    assert [str(resource) for resource in old_resources] == [
+    assert [str(resource) for resource in old_resources.resources] == [
         "document:folder-doc",
         "document:group-doc",
     ]
-    assert [str(resource) for resource in rebuilt_resources] == [
+    assert [str(resource) for resource in rebuilt_resources.resources] == [
         "document:project-doc",
         "document:team-doc",
     ]

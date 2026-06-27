@@ -4,6 +4,8 @@ from zanzipy.models import (
     CheckRequest,
     CheckResponse,
     EntityId,
+    LookupResourcesRequest,
+    LookupResourcesResponse,
     NamespaceId,
     Obj,
     Relation,
@@ -112,5 +114,45 @@ class TestCheckResponse:
         )
         assert resp.allowed is False
         assert resp.debug_trace == ["expand group:eng"]
+        assert resp.depth_reached == 2
+        assert resp.tuples_examined == 3
+
+
+class TestLookupResourcesRequest:
+    def test_from_strings(self) -> None:
+        req = LookupResourcesRequest.from_strings(
+            resource_type="document",
+            permission="can_view",
+            subject="user:alice",
+        )
+
+        assert req.resource_type == "document"
+        assert req.permission == "can_view"
+        assert isinstance(req.subject, Subject)
+        assert req.subject.relation is None
+        assert isinstance(req.to_resource_namespace(), NamespaceId)
+        assert isinstance(req.to_permission(), Relation)
+
+    def test_from_strings_rejects_userset_subject(self) -> None:
+        with pytest.raises(ValueError, match="direct subject"):
+            LookupResourcesRequest.from_strings(
+                resource_type="document",
+                permission="viewer",
+                subject="group:eng#member",
+            )
+
+
+class TestLookupResourcesResponse:
+    def test_fields(self) -> None:
+        resource = Obj.from_string("document:readme")
+        resp = LookupResourcesResponse(
+            resources=(resource,),
+            debug_trace=("lookup document#viewer@user:alice",),
+            depth_reached=2,
+            tuples_examined=3,
+        )
+
+        assert resp.resources == (resource,)
+        assert resp.debug_trace == ("lookup document#viewer@user:alice",)
         assert resp.depth_reached == 2
         assert resp.tuples_examined == 3

@@ -4,10 +4,10 @@ from .engine.authorization import AuthorizationEngine
 from .models import (
     CheckRequest,
     CheckResponse,
+    LookupResourcesRequest,
     Obj,
     Relation,
     RelationTuple,
-    Subject,
     TupleFilter,
 )
 from .schema.relations import RelationDef
@@ -373,14 +373,12 @@ class ZanzibarClient:
         *,
         context: ReadContext,
     ) -> list[str]:
-        subject_ref = Subject.from_string(subject).require_direct()
-        resources = self._authorization_engine.lookup_resources(
-            resource_type=object_type,
-            permission=relation,
-            subject=subject_ref,
+        request = LookupResourcesRequest.from_strings(object_type, relation, subject)
+        response = self._authorization_engine.lookup_resources(
+            request,
             context=context,
         )
-        return [str(resource) for resource in resources]
+        return [str(resource) for resource in response.resources]
 
     def _list_subjects_direct_in_context(
         self,
