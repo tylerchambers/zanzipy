@@ -173,8 +173,8 @@ class CheckEngine:
 
         return dispatch_rewrite_rule(
             rewrite,
-            direct=self._evaluate_direct_rule,
-            this=self._evaluate_this_rule,
+            direct=self._evaluate_direct_or_this_rule,
+            this=self._evaluate_direct_or_this_rule,
             computed_userset=self._evaluate_computed_userset_rule,
             tuple_to_userset=self._evaluate_tuple_to_userset_rule,
             union=self._evaluate_union_rule,
@@ -192,37 +192,9 @@ class CheckEngine:
             current_relation=current_relation,
         )
 
-    def _evaluate_direct_rule(
+    def _evaluate_direct_or_this_rule(
         self,
-        _rewrite: DirectRule,
-        *,
-        object_type: str,
-        object_id: str,
-        subject_type: str,
-        subject_id: str,
-        context: ReadContext,
-        depth: int,
-        visited: set[tuple[str, str, str, str, str]],
-        debug_trace: list[str] | None,
-        counters: _Counters,
-        current_relation: str,
-    ) -> bool:
-        return self._check_direct(
-            object_type=object_type,
-            object_id=object_id,
-            subject_type=subject_type,
-            subject_id=subject_id,
-            context=context,
-            depth=depth,
-            visited=visited,
-            debug_trace=debug_trace,
-            counters=counters,
-            effective_relation=current_relation,
-        )
-
-    def _evaluate_this_rule(
-        self,
-        _rewrite: ThisRule,
+        _rewrite: DirectRule | ThisRule,
         *,
         object_type: str,
         object_id: str,

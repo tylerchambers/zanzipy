@@ -147,8 +147,8 @@ class ExpansionEngine:
 
         return dispatch_rewrite_rule(
             rewrite,
-            direct=self._evaluate_direct_rule,
-            this=self._evaluate_this_rule,
+            direct=self._evaluate_direct_or_this_rule,
+            this=self._evaluate_direct_or_this_rule,
             computed_userset=self._evaluate_computed_userset_rule,
             tuple_to_userset=self._evaluate_tuple_to_userset_rule,
             union=self._evaluate_union_rule,
@@ -162,27 +162,9 @@ class ExpansionEngine:
             current_relation=current_relation,
         )
 
-    def _evaluate_direct_rule(
+    def _evaluate_direct_or_this_rule(
         self,
-        _rewrite: DirectRule,
-        *,
-        object_type: str,
-        object_id: str,
-        context: ReadContext,
-        depth: int,
-        visited: set[tuple[str, str, str]],
-        current_relation: str,
-    ) -> SubjectSet:
-        return self._expand_direct(
-            object_type=object_type,
-            object_id=object_id,
-            context=context,
-            effective_relation=current_relation,
-        )
-
-    def _evaluate_this_rule(
-        self,
-        _rewrite: ThisRule,
+        _rewrite: DirectRule | ThisRule,
         *,
         object_type: str,
         object_id: str,

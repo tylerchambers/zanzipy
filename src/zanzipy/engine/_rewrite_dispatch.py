@@ -22,7 +22,6 @@ R = TypeVar("R")
 
 def dispatch_rewrite_rule(
     rewrite: RewriteRule,
-    *args: P.args,
     direct: Callable[Concatenate[DirectRule, P], R],
     this: Callable[Concatenate[ThisRule, P], R],
     computed_userset: Callable[Concatenate[ComputedUsersetRule, P], R],
@@ -30,6 +29,7 @@ def dispatch_rewrite_rule(
     union: Callable[Concatenate[UnionRule, P], R],
     intersection: Callable[Concatenate[IntersectionRule, P], R],
     exclusion: Callable[Concatenate[ExclusionRule, P], R],
+    *args: P.args,
     **kwargs: P.kwargs,
 ) -> R:
     """Dispatch a rewrite node to the handler for its concrete shape.

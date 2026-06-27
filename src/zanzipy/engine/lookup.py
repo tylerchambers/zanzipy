@@ -180,27 +180,19 @@ class LookupEngine:
     ) -> tuple[tuple[str, str], ...]:
         return dispatch_rewrite_rule(
             rewrite,
-            direct=self._rewrite_relation_refs_direct,
-            this=self._rewrite_relation_refs_this,
+            direct=self._rewrite_relation_refs_leaf,
+            this=self._rewrite_relation_refs_leaf,
             computed_userset=self._rewrite_relation_refs_computed_userset,
             tuple_to_userset=self._rewrite_relation_refs_tuple_to_userset,
-            union=self._rewrite_relation_refs_union,
-            intersection=self._rewrite_relation_refs_intersection,
+            union=self._rewrite_relation_refs_children,
+            intersection=self._rewrite_relation_refs_children,
             exclusion=self._rewrite_relation_refs_exclusion,
             resource_type=resource_type,
         )
 
-    def _rewrite_relation_refs_direct(
+    def _rewrite_relation_refs_leaf(
         self,
-        _rewrite: DirectRule,
-        *,
-        resource_type: str,
-    ) -> tuple[tuple[str, str], ...]:
-        return ()
-
-    def _rewrite_relation_refs_this(
-        self,
-        _rewrite: ThisRule,
+        _rewrite: DirectRule | ThisRule,
         *,
         resource_type: str,
     ) -> tuple[tuple[str, str], ...]:
@@ -228,24 +220,9 @@ class LookupEngine:
             )
         )
 
-    def _rewrite_relation_refs_union(
+    def _rewrite_relation_refs_children(
         self,
-        rewrite: UnionRule,
-        *,
-        resource_type: str,
-    ) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            child_ref
-            for child in rewrite.children
-            for child_ref in self._rewrite_relation_refs(
-                child,
-                resource_type=resource_type,
-            )
-        )
-
-    def _rewrite_relation_refs_intersection(
-        self,
-        rewrite: IntersectionRule,
+        rewrite: UnionRule | IntersectionRule,
         *,
         resource_type: str,
     ) -> tuple[tuple[str, str], ...]:
@@ -355,8 +332,8 @@ class LookupEngine:
     ) -> set[Obj]:
         return dispatch_rewrite_rule(
             rewrite,
-            direct=self._evaluate_direct_rule,
-            this=self._evaluate_this_rule,
+            direct=self._evaluate_direct_or_this_rule,
+            this=self._evaluate_direct_or_this_rule,
             computed_userset=self._evaluate_computed_userset_rule,
             tuple_to_userset=self._evaluate_tuple_to_userset_rule,
             union=self._evaluate_union_rule,
@@ -370,28 +347,9 @@ class LookupEngine:
             visited=visited,
         )
 
-    def _evaluate_direct_rule(
+    def _evaluate_direct_or_this_rule(
         self,
-        _rewrite: DirectRule,
-        *,
-        resource_type: str,
-        subject: Subject,
-        context: ReadContext,
-        depth: int,
-        current_relation: str,
-        visited: set[tuple[str, str, str]],
-    ) -> set[Obj]:
-        return self._lookup_direct(
-            resource_type=resource_type,
-            relation=current_relation,
-            subject=subject,
-            context=context,
-            depth=depth,
-        )
-
-    def _evaluate_this_rule(
-        self,
-        _rewrite: ThisRule,
+        _rewrite: DirectRule | ThisRule,
         *,
         resource_type: str,
         subject: Subject,
@@ -794,29 +752,20 @@ class LookupEngine:
     ) -> dict[tuple[tuple[str, str], str | None], int]:
         return dispatch_rewrite_rule(
             rewrite,
-            direct=self._rewrite_dependencies_direct,
-            this=self._rewrite_dependencies_this,
+            direct=self._rewrite_dependencies_leaf,
+            this=self._rewrite_dependencies_leaf,
             computed_userset=self._rewrite_dependencies_computed_userset,
             tuple_to_userset=self._rewrite_dependencies_tuple_to_userset,
-            union=self._rewrite_dependencies_union,
-            intersection=self._rewrite_dependencies_intersection,
+            union=self._rewrite_dependencies_children,
+            intersection=self._rewrite_dependencies_children,
             exclusion=self._rewrite_dependencies_exclusion,
             resource_type=resource_type,
             cost=cost,
         )
 
-    def _rewrite_dependencies_direct(
+    def _rewrite_dependencies_leaf(
         self,
-        _rewrite: DirectRule,
-        *,
-        resource_type: str,
-        cost: int,
-    ) -> dict[tuple[tuple[str, str], str | None], int]:
-        return {}
-
-    def _rewrite_dependencies_this(
-        self,
-        _rewrite: ThisRule,
+        _rewrite: DirectRule | ThisRule,
         *,
         resource_type: str,
         cost: int,
@@ -847,28 +796,9 @@ class LookupEngine:
             )
         }
 
-    def _rewrite_dependencies_union(
+    def _rewrite_dependencies_children(
         self,
-        rewrite: UnionRule,
-        *,
-        resource_type: str,
-        cost: int,
-    ) -> dict[tuple[tuple[str, str], str | None], int]:
-        dependencies: dict[tuple[tuple[str, str], str | None], int] = {}
-        for child in rewrite.children:
-            self._merge_dependency_costs(
-                dependencies,
-                self._rewrite_dependencies(
-                    child,
-                    resource_type=resource_type,
-                    cost=cost + 1,
-                ),
-            )
-        return dependencies
-
-    def _rewrite_dependencies_intersection(
-        self,
-        rewrite: IntersectionRule,
+        rewrite: UnionRule | IntersectionRule,
         *,
         resource_type: str,
         cost: int,
