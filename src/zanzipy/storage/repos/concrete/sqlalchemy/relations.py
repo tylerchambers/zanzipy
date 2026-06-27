@@ -50,12 +50,13 @@ class SQLAlchemyRelationRepository(RelationRepository):
 
         self._session_factory = session_factory
         self._metadata = self._sa.MetaData()
+        revision_type = self._sa.BigInteger().with_variant(self._sa.Integer(), "sqlite")
         self._revisions = self._sa.Table(
             _REVISIONS_TABLE_NAME,
             self._metadata,
             self._sa.Column(
                 "revision",
-                self._sa.Integer,
+                revision_type,
                 primary_key=True,
                 autoincrement=True,
             ),
@@ -78,13 +79,13 @@ class SQLAlchemyRelationRepository(RelationRepository):
             self._sa.Column("subject_rel", self._sa.String, nullable=False),
             self._sa.Column(
                 "created_revision",
-                self._sa.Integer,
+                revision_type,
                 self._sa.ForeignKey(f"{_REVISIONS_TABLE_NAME}.revision"),
                 primary_key=True,
             ),
             self._sa.Column(
                 "deleted_revision",
-                self._sa.Integer,
+                revision_type,
                 self._sa.ForeignKey(f"{_REVISIONS_TABLE_NAME}.revision"),
                 nullable=True,
             ),
@@ -95,6 +96,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
                 "relation",
                 "created_revision",
                 "deleted_revision",
+                postgresql_include=("subject_ns", "subject_id", "subject_rel"),
             ),
             self._sa.Index(
                 "idx_rt_reverse",
@@ -103,12 +105,20 @@ class SQLAlchemyRelationRepository(RelationRepository):
                 "subject_rel",
                 "created_revision",
                 "deleted_revision",
+                postgresql_include=("object_ns", "object_id", "relation"),
+            ),
+            self._sa.Index(
+                "idx_rt_object_type_relation",
+                "object_ns",
+                "relation",
+                "object_id",
             ),
             self._sa.Index(
                 "idx_rt_active_unique",
                 "tuple_key",
                 unique=True,
                 sqlite_where=self._sa.text("deleted_revision IS NULL"),
+                postgresql_where=self._sa.text("deleted_revision IS NULL"),
             ),
         )
 
