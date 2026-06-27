@@ -153,6 +153,23 @@ class TestRedisTupleCache:
         assert cache.get_by_subject(subj, context=ctx2) is None
         assert cache.get_by_subject(subj, context=other_tenant_ctx) is None
 
+        alt_object_tuples = [_rt("doc:1#viewer@user:mallory")]
+        alt_subject_tuples = [_rt("doc:alt#viewer@user:alice")]
+        cache.set_by_object(obj, context=other_tenant_ctx, tuples=alt_object_tuples)
+        cache.set_by_subject(subj, context=other_tenant_ctx, tuples=alt_subject_tuples)
+        assert [str(t) for t in cache.get_by_object(obj, context=ctx1) or ()] == [
+            str(t) for t in tuples
+        ]
+        assert [
+            str(t) for t in cache.get_by_object(obj, context=other_tenant_ctx) or ()
+        ] == [str(t) for t in alt_object_tuples]
+        assert [str(t) for t in cache.get_by_subject(subj, context=ctx1) or ()] == [
+            str(t) for t in tuples
+        ]
+        assert [
+            str(t) for t in cache.get_by_subject(subj, context=other_tenant_ctx) or ()
+        ] == [str(t) for t in alt_subject_tuples]
+
         assert "k:tenant:default:obj:doc:1:rev:1" in codec.keys
         assert "k:tenant:default:subj:user:alice:-:rev:1" in codec.keys
         assert "k:tenant:alt:obj:doc:1:rev:1" in codec.keys

@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import sessionmaker
@@ -47,6 +48,7 @@ class TestSQLAlchemyRelationRepository:
         write = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
         noop = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
         delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(t),))
+        noop_delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(t),))
         readd = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
 
         assert isinstance(write, WriteResult)
@@ -54,6 +56,7 @@ class TestSQLAlchemyRelationRepository:
         assert write.revision == Revision(1)
         assert noop.revision == write.revision
         assert delete.revision == Revision(2)
+        assert noop_delete.revision == delete.revision
         assert readd.revision == Revision(3)
         assert repo.head_revision(TENANT) == readd.revision
 
@@ -139,6 +142,77 @@ class TestSQLAlchemyRelationRepository:
         assert (
             repo.get(t, context=_read_context(other_write.revision, OTHER_TENANT)) == t
         )
+
+    def test_new_tenant_empty_and_future_revisions_are_tenant_scoped(self) -> None:
+        repo = _repo()
+        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
+
+        other_write = repo.write(WriteContext(OTHER_TENANT), (TupleMutation.touch(t),))
+
+        assert other_write.revision == Revision(1)
+        assert repo.head_revision(TENANT) == Revision(0)
+        assert list(repo.read(TupleFilter(), context=_read_context(Revision(0)))) == []
+        with pytest.raises(ValueError, match="newer than head"):
+            list(repo.read(TupleFilter(), context=_read_context(Revision(1))))
+
+    def test_watch_is_tenant_scoped(self) -> None:
+        repo = _repo()
+        tenant_tuple = RelationTuple.from_string("document:doc1#viewer@user:alice")
+        other_tuple = RelationTuple.from_string("document:doc2#viewer@user:bob")
+
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tenant_tuple),))
+        other_write = repo.write(
+            WriteContext(OTHER_TENANT),
+            (TupleMutation.touch(other_tuple),),
+        )
+        delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(tenant_tuple),))
+
+        tenant_changes = list(repo.watch(TENANT, after=Revision(0)))
+        other_changes = list(repo.watch(OTHER_TENANT, after=Revision(0)))
+
+        assert [change.revision for change in tenant_changes] == [
+            write.revision,
+            delete.revision,
+        ]
+        assert [change.relation_tuple for change in tenant_changes] == [
+            tenant_tuple,
+            tenant_tuple,
+        ]
+        assert [change.revision for change in other_changes] == [other_write.revision]
+        assert [change.relation_tuple for change in other_changes] == [other_tuple]
+
+    def test_invalid_mutation_rolls_back_partial_write(self) -> None:
+        repo = _repo()
+        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
+        bad = TupleMutation(t, "invalid")  # type: ignore[arg-type]
+
+        with pytest.raises(ValueError, match="unknown tuple mutation"):
+            repo.write(WriteContext(TENANT), (TupleMutation.touch(t), bad))
+
+        assert repo.head_revision(TENANT) == Revision(0)
+        assert repo.get(t, context=_read_context(Revision(0))) is None
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
+        assert write.revision == Revision(1)
+        assert repo.get(t, context=_read_context(write.revision)) == t
+
+    def test_metadata_has_tenant_scoped_keys_and_foreign_keys(self) -> None:
+        repo = _repo()
+
+        assert [column.name for column in repo._revisions.primary_key.columns] == [
+            "tenant_id",
+            "revision",
+        ]
+        assert [column.name for column in repo._table.primary_key.columns] == [
+            "tenant_id",
+            "tuple_key",
+            "created_revision",
+        ]
+        fk_columns = {
+            tuple(element.parent.name for element in constraint.elements)
+            for constraint in repo._table.foreign_key_constraints
+        }
+        assert ("tenant_id", "created_revision") in fk_columns
+        assert ("tenant_id", "deleted_revision") in fk_columns
 
     def test_postgresql_indexes_match_mvcc_access_paths(self) -> None:
         repo = _repo()

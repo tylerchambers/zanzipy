@@ -143,76 +143,93 @@ class SQLAlchemyRelationRepository(RelationRepository):
     ) -> WriteResult:
         """Persist idempotent tenant mutations atomically in one revision.
 
+        Transient same-tenant revision allocation conflicts are retried so
+        concurrent writers receive distinct tenant-local revisions when the
+        database surfaces a primary-key or serialization conflict.
+
         Raises:
             ValueError: If a mutation contains an unknown operation.
         """
-        session = self._session_factory()
-        revision: Revision | None = None
-        try:
-            for mutation in mutations:
-                if mutation.operation is RelationshipOperation.WRITE:
-                    if (
-                        self._active_tuple(
+        retry_errors = (self._sa.exc.IntegrityError, self._sa.exc.OperationalError)
+        mutations = tuple(mutations)
+        for attempt in range(3):
+            session = self._session_factory()
+            revision: Revision | None = None
+            try:
+                for mutation in mutations:
+                    if mutation.operation is RelationshipOperation.WRITE:
+                        if (
+                            self._active_tuple(
+                                session,
+                                context.tenant,
+                                mutation.relation_tuple,
+                            )
+                            is not None
+                        ):
+                            continue
+                        revision = self._ensure_write_revision(
+                            session,
+                            context.tenant,
+                            revision,
+                        )
+                        session.execute(
+                            self._table.insert().values(
+                                **stored_tuple_values(
+                                    mutation.relation_tuple,
+                                    tenant_id=str(context.tenant),
+                                    created_revision=revision.value,
+                                )
+                            )
+                        )
+                        continue
+
+                    if mutation.operation is RelationshipOperation.DELETE:
+                        active = self._active_tuple(
                             session,
                             context.tenant,
                             mutation.relation_tuple,
                         )
-                        is not None
-                    ):
-                        continue
-                    revision = self._ensure_write_revision(
-                        session,
-                        context.tenant,
-                        revision,
-                    )
-                    session.execute(
-                        self._table.insert().values(
-                            **stored_tuple_values(
-                                mutation.relation_tuple,
-                                tenant_id=str(context.tenant),
-                                created_revision=revision.value,
+                        if active is None:
+                            continue
+                        revision = self._ensure_write_revision(
+                            session,
+                            context.tenant,
+                            revision,
+                        )
+                        session.execute(
+                            self._table.update()
+                            .where(self._table.c.tenant_id == str(context.tenant))
+                            .where(
+                                self._table.c.tuple_key == str(mutation.relation_tuple)
                             )
+                            .where(self._table.c.deleted_revision.is_(None))
+                            .values(deleted_revision=revision.value)
+                        )
+                        continue
+
+                    raise ValueError(
+                        f"unknown tuple mutation operation: {mutation.operation}"
+                    )
+                if revision is None:
+                    session.rollback()
+                    return WriteResult(
+                        RevisionToken(
+                            context.tenant,
+                            self.head_revision(context.tenant),
                         )
                     )
-                    continue
-
-                if mutation.operation is RelationshipOperation.DELETE:
-                    active = self._active_tuple(
-                        session,
-                        context.tenant,
-                        mutation.relation_tuple,
-                    )
-                    if active is None:
-                        continue
-                    revision = self._ensure_write_revision(
-                        session,
-                        context.tenant,
-                        revision,
-                    )
-                    session.execute(
-                        self._table.update()
-                        .where(self._table.c.tenant_id == str(context.tenant))
-                        .where(self._table.c.tuple_key == str(mutation.relation_tuple))
-                        .where(self._table.c.deleted_revision.is_(None))
-                        .values(deleted_revision=revision.value)
-                    )
-                    continue
-
-                raise ValueError(
-                    f"unknown tuple mutation operation: {mutation.operation}"
-                )
-            if revision is None:
+                session.commit()
+                return WriteResult(RevisionToken(context.tenant, revision))
+            except retry_errors:
                 session.rollback()
-                return WriteResult(
-                    RevisionToken(context.tenant, self.head_revision(context.tenant))
-                )
-            session.commit()
-            return WriteResult(RevisionToken(context.tenant, revision))
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+                if attempt == 2:
+                    raise
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+        raise RuntimeError("failed to allocate tenant revision")
 
     def head_revision(self, tenant: TenantId) -> Revision:
         """Return the greatest committed revision visible for ``tenant``."""

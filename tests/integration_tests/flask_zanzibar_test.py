@@ -67,6 +67,19 @@ class TestFlaskZanzibarExtension:
             assert isinstance(ext, Zanzibar)
             assert isinstance(ext.client, ZanzibarClient)
 
+    def test_configured_tenant_is_passed_to_client(self) -> None:
+        app = Flask("tenant-config")
+        app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(registry=_make_registry())
+        app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        app.config["ZANZIBAR_TENANT"] = "acme"
+
+        ext = Zanzibar()
+        ext.init_app(app)
+
+        with app.app_context():
+            assert ext.client is not None
+            assert ext.client.tenant == TenantId("acme")
+
     def test_write_and_check_via_proxy(self) -> None:
         app = self._create_app()
 

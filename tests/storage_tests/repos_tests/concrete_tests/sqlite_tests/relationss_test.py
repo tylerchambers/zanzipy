@@ -1,3 +1,5 @@
+import pytest
+
 from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.repos.concrete.sqlite import SQLiteRelationRepository
 from zanzipy.storage.revision import (
@@ -26,6 +28,7 @@ class TestSQLiteRelationRepository:
         write = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
         noop = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
         delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(t),))
+        noop_delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(t),))
         readd = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
 
         assert isinstance(write, WriteResult)
@@ -33,6 +36,7 @@ class TestSQLiteRelationRepository:
         assert write.revision == Revision(1)
         assert noop.revision == write.revision
         assert delete.revision == Revision(2)
+        assert noop_delete.revision == delete.revision
         assert readd.revision == Revision(3)
         assert repo.head_revision(TENANT) == readd.revision
 
@@ -119,19 +123,110 @@ class TestSQLiteRelationRepository:
             repo.get(t, context=_read_context(other_write.revision, OTHER_TENANT)) == t
         )
 
-    def test_schema_has_object_type_relation_index(self) -> None:
+    def test_schema_has_tenant_scoped_keys_and_indexes(self) -> None:
         repo = SQLiteRelationRepository()
+
+        revision_pk = {
+            row["name"]: row["pk"]
+            for row in repo._conn.execute("PRAGMA table_info(revisions)")
+            if row["pk"]
+        }
+        tuple_pk = {
+            row["name"]: row["pk"]
+            for row in repo._conn.execute("PRAGMA table_info(relation_tuples)")
+            if row["pk"]
+        }
+        assert revision_pk == {"tenant_id": 1, "revision": 2}
+        assert tuple_pk == {"tenant_id": 1, "tuple_key": 2, "created_revision": 3}
 
         index_names = {
             row["name"]
             for row in repo._conn.execute("PRAGMA index_list(relation_tuples)")
         }
+        assert {
+            "idx_rt_active_unique",
+            "idx_rt_forward",
+            "idx_rt_reverse",
+            "idx_rt_object_type_relation",
+        } <= index_names
 
-        assert "idx_rt_object_type_relation" in index_names
-        index_columns = [
-            row["name"]
-            for row in repo._conn.execute(
-                "PRAGMA index_info(idx_rt_object_type_relation)"
-            )
+        def index_columns(name: str) -> list[str]:
+            return [
+                row["name"] for row in repo._conn.execute(f"PRAGMA index_info({name})")
+            ]
+
+        assert index_columns("idx_rt_active_unique") == ["tenant_id", "tuple_key"]
+        assert index_columns("idx_rt_forward") == [
+            "tenant_id",
+            "object_ns",
+            "object_id",
+            "relation",
+            "created_revision",
+            "deleted_revision",
         ]
-        assert index_columns == ["tenant_id", "object_ns", "relation", "object_id"]
+        assert index_columns("idx_rt_reverse") == [
+            "tenant_id",
+            "subject_ns",
+            "subject_id",
+            "subject_rel",
+            "created_revision",
+            "deleted_revision",
+        ]
+        assert index_columns("idx_rt_object_type_relation") == [
+            "tenant_id",
+            "object_ns",
+            "relation",
+            "object_id",
+        ]
+
+    def test_new_tenant_empty_and_future_revisions_are_tenant_scoped(self) -> None:
+        repo = SQLiteRelationRepository()
+        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
+
+        other_write = repo.write(WriteContext(OTHER_TENANT), (TupleMutation.touch(t),))
+
+        assert other_write.revision == Revision(1)
+        assert repo.head_revision(TENANT) == Revision(0)
+        assert list(repo.read(TupleFilter(), context=_read_context(Revision(0)))) == []
+        with pytest.raises(ValueError, match="newer than head"):
+            list(repo.read(TupleFilter(), context=_read_context(Revision(1))))
+
+    def test_watch_is_tenant_scoped(self) -> None:
+        repo = SQLiteRelationRepository()
+        tenant_tuple = RelationTuple.from_string("document:doc1#viewer@user:alice")
+        other_tuple = RelationTuple.from_string("document:doc2#viewer@user:bob")
+
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tenant_tuple),))
+        other_write = repo.write(
+            WriteContext(OTHER_TENANT),
+            (TupleMutation.touch(other_tuple),),
+        )
+        delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(tenant_tuple),))
+
+        tenant_changes = list(repo.watch(TENANT, after=Revision(0)))
+        other_changes = list(repo.watch(OTHER_TENANT, after=Revision(0)))
+
+        assert [change.revision for change in tenant_changes] == [
+            write.revision,
+            delete.revision,
+        ]
+        assert [change.relation_tuple for change in tenant_changes] == [
+            tenant_tuple,
+            tenant_tuple,
+        ]
+        assert [change.revision for change in other_changes] == [other_write.revision]
+        assert [change.relation_tuple for change in other_changes] == [other_tuple]
+
+    def test_invalid_mutation_rolls_back_partial_write(self) -> None:
+        repo = SQLiteRelationRepository()
+        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
+        bad = TupleMutation(t, "invalid")  # type: ignore[arg-type]
+
+        with pytest.raises(ValueError, match="unknown tuple mutation"):
+            repo.write(WriteContext(TENANT), (TupleMutation.touch(t), bad))
+
+        assert repo.head_revision(TENANT) == Revision(0)
+        assert repo.get(t, context=_read_context(Revision(0))) is None
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
+        assert write.revision == Revision(1)
+        assert repo.get(t, context=_read_context(write.revision)) == t

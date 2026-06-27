@@ -134,7 +134,8 @@ class SQLiteRelationRepository(RelationRepository):
             ValueError: If a mutation contains an unknown operation.
         """
         revision: Revision | None = None
-        with self._conn:
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
             for mutation in mutations:
                 if mutation.operation is RelationshipOperation.WRITE:
                     if self._active_tuple(context.tenant, mutation.relation_tuple):
@@ -160,6 +161,11 @@ class SQLiteRelationRepository(RelationRepository):
                 raise ValueError(
                     f"unknown tuple mutation operation: {mutation.operation}"
                 )
+        except Exception:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
         committed = self.head_revision(context.tenant) if revision is None else revision
         return WriteResult(RevisionToken(context.tenant, committed))
 

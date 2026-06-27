@@ -38,11 +38,11 @@ assert client.check_at_revision(
     "document:readme",
     "can_view",
     "user:alice",
-    revision=write.revision,
+    revision=write.token,
 )
 ```
 
-That’s it. All zanzipy relation storage is tenant-scoped and revisioned. `RelationTuple` stays tenant-free: a tuple is the logical authorization fact (`object#relation@subject`), while `TenantId` is part of read/write/evaluation context. The same logical tuple may exist independently in multiple tenants. Public convenience APIs use the client’s configured tenant and repository head revision by default; explicit revision APIs are available for snapshot checks. Add more relations/permissions with the DSL, and swap the repository when you’re ready to plug in durable storage.
+That’s it. All zanzipy relation storage is tenant-scoped and revisioned. `RelationTuple` stays tenant-free: a tuple is the logical authorization fact (`object#relation@subject`), while `TenantId` is part of read/write/evaluation context. The same logical tuple may exist independently in multiple tenants. Public convenience APIs use the client’s configured tenant and repository head revision by default; exact revision APIs accept tenant-scoped `RevisionToken` values and also allow a naked `Revision` interpreted within the client tenant. Add more relations/permissions with the DSL, and swap the repository when you’re ready to plug in durable storage.
 
 ### Quick start with mixins 🧩
 
@@ -110,8 +110,8 @@ For a fuller mixins setup with groups, SQLAlchemy models, and caching, see `exam
 - 🔗 Zanzibar semantics: relations, permissions, union/intersection/exclusion, tuple‑to‑userset.
 - ✅ Correctness‑first evaluation: cycle detection, max‑depth limits, and subject expansion.
 - 🧩 Simple client API: `write`, `delete`, `check`, `list_objects`, `expand`.
-- Tenant-scoped revisioned storage: writes return `WriteResult` with a tenant-scoped revision token; snapshot reads use `Revision`.
-- 🗄️ Storage-agnostic: implement tenant-scoped `RelationRepository`; start with in-memory.
+- Tenant-scoped revisioned storage: writes return `WriteResult` with a tenant-scoped `RevisionToken`; snapshot reads prefer the token and reject mismatched tenant tokens.
+- Storage-agnostic: implement tenant-scoped `RelationRepository`; start with in-memory. SQLite uses `BEGIN IMMEDIATE` to serialize revision allocation; SQLAlchemy retries transient tenant-revision insert/serialization conflicts and surfaces the database error if retries are exhausted.
 - ⚡ Optional tenant/revision-aware tuple cache and compiled rule cache for hot paths.
 
 ### When should you use zanzipy? 🤔

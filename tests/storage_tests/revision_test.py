@@ -48,3 +48,6 @@ def test_revision_for_consistency_rejects_cross_tenant_token() -> None:
 
     with pytest.raises(ValueError, match="tenant does not match"):
         revision_for_consistency(head, AtLeastAsFresh(other))
+
+    with pytest.raises(ValueError, match="tenant does not match"):
+        revision_for_consistency(head, AtExactRevision(other))

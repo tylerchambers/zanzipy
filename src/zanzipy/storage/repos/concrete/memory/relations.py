@@ -43,18 +43,24 @@ class InMemoryRelationRepository(RelationRepository):
         """
         tenant_key = str(context.tenant)
         self._ensure_tenant(tenant_key)
+        staged = dict(self._tuples[tenant_key])
         changes: list[tuple[RelationTuple, RelationshipOperation]] = []
         for mutation in mutations:
+            key = str(mutation.relation_tuple)
             if mutation.operation is RelationshipOperation.WRITE:
-                if self._touch(tenant_key, mutation.relation_tuple):
-                    changes.append((mutation.relation_tuple, mutation.operation))
+                if key in staged:
+                    continue
+                staged[key] = mutation.relation_tuple
+                changes.append((mutation.relation_tuple, mutation.operation))
                 continue
             if mutation.operation is RelationshipOperation.DELETE:
-                deleted = self._delete(tenant_key, mutation.relation_tuple)
+                deleted = staged.pop(key, None)
                 if deleted is not None:
                     changes.append((deleted, mutation.operation))
                 continue
             raise ValueError(f"unknown tuple mutation operation: {mutation.operation}")
+        if changes:
+            self._tuples[tenant_key] = staged
         return self._commit(context.tenant, changes)
 
     def head_revision(self, tenant: TenantId) -> Revision:

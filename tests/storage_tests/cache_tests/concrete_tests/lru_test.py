@@ -54,6 +54,11 @@ class TestLruTupleCache:
         assert cache.get_by_object(obj, context=other_tenant_ctx) is None
         assert cache.get_by_object(obj, context=ctx1) == (t1,)
 
+        t_alt = _rt("doc", "1", "viewer", "user", "mallory")
+        cache.set_by_object(obj, context=other_tenant_ctx, tuples=[t_alt])
+        assert cache.get_by_object(obj, context=ctx1) == (t1,)
+        assert cache.get_by_object(obj, context=other_tenant_ctx) == (t_alt,)
+
     def test_get_set_by_subject_is_tenant_and_revision_scoped(self) -> None:
         cache = LruTupleCache(max_entries=10, ttl_seconds=None)
         t_direct = _rt("doc", "1", "editor", "user", "alice")
@@ -74,10 +79,17 @@ class TestLruTupleCache:
         assert cache.get_by_subject(t_direct.subject, context=ctx2) is None
         assert cache.get_by_subject(t_direct.subject, context=other_tenant_ctx) is None
 
-        keys = list(cache._store._entries)
-        assert len(keys) == 1
-        assert keys[0].tenant_id == str(DEFAULT_TENANT)
-        assert keys[0].revision == 1
+        t_alt = _rt("doc", "alt", "editor", "user", "alice")
+        cache.set_by_subject(t_direct.subject, context=other_tenant_ctx, tuples=[t_alt])
+        assert cache.get_by_subject(t_direct.subject, context=ctx1) == (t_direct,)
+        assert cache.get_by_subject(
+            t_direct.subject,
+            context=other_tenant_ctx,
+        ) == (t_alt,)
+
+        key_scopes = {(key.tenant_id, key.revision) for key in cache._store._entries}
+        assert (str(DEFAULT_TENANT), 1) in key_scopes
+        assert (str(ALT_TENANT), 1) in key_scopes
 
         cache.set_by_subject(
             t_anchor.subject,

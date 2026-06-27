@@ -144,9 +144,9 @@ class ZanzibarClient:
         relation: str,
         subject: str,
         *,
-        revision: Revision,
+        revision: Revision | RevisionToken,
     ) -> bool:
-        """Return whether a direct subject is authorized at an exact revision."""
+        """Return whether a direct subject is authorized at an exact tenant revision."""
 
         response = self.check_detailed_at_revision(
             object,
@@ -176,9 +176,9 @@ class ZanzibarClient:
         relation: str,
         subject: str,
         *,
-        revision: Revision,
+        revision: Revision | RevisionToken,
     ) -> CheckResponse:
-        """Return the full check result evaluated against an exact revision."""
+        """Return the full check result evaluated against an exact tenant revision."""
 
         request = CheckRequest.from_strings(object, relation, subject)
         return self._check_engine.check(
@@ -210,9 +210,9 @@ class ZanzibarClient:
         relation: str,
         subject: str,
         *,
-        revision: Revision,
+        revision: Revision | RevisionToken,
     ) -> list[str]:
-        """Enumerate authorized objects at an exact revision."""
+        """Enumerate authorized objects at an exact tenant revision."""
 
         return self._list_objects_in_context(
             object_type,
@@ -242,9 +242,9 @@ class ZanzibarClient:
         object: str,
         relation: str,
         *,
-        revision: Revision,
+        revision: Revision | RevisionToken,
     ) -> list[str]:
-        """List direct subjects for an object's relation at an exact revision."""
+        """List direct subjects for an object's relation at an exact tenant revision."""
 
         return self._list_subjects_direct_in_context(
             object,
@@ -269,9 +269,9 @@ class ZanzibarClient:
         object: str,
         relation: str,
         *,
-        revision: Revision,
+        revision: Revision | RevisionToken,
     ) -> SubjectSet:
-        """Expand a relation/permission into subjects at an exact revision."""
+        """Expand a relation/permission into subjects at an exact tenant revision."""
 
         return self._expand_in_context(
             object,
@@ -296,9 +296,9 @@ class ZanzibarClient:
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        revision: Revision | RevisionToken,
     ) -> Iterable[RelationTuple]:
-        """Read tuples matching ``filter`` at an exact revision."""
+        """Read tuples matching ``filter`` at an exact tenant revision."""
 
         return self.relations_repository.read(
             filter,
@@ -309,6 +309,11 @@ class ZanzibarClient:
         """Return the latest relation repository revision for this tenant."""
 
         return self.relations_repository.head_revision(self.tenant)
+
+    def head_token(self) -> RevisionToken:
+        """Return the tenant-scoped head revision token for this client."""
+
+        return RevisionToken(self.tenant, self.head_revision())
 
     def ping(self) -> bool:
         """Lightweight health check across dependencies."""
@@ -323,7 +328,16 @@ class ZanzibarClient:
     def _write_context(self) -> WriteContext:
         return WriteContext(self.tenant)
 
-    def _read_context_at_revision(self, revision: Revision) -> ReadContext:
+    def _read_context_at_revision(
+        self, revision: Revision | RevisionToken
+    ) -> ReadContext:
+        if isinstance(revision, RevisionToken):
+            if revision.tenant != self.tenant:
+                raise ValueError(
+                    "revision token tenant does not match client tenant: "
+                    f"requested {revision.tenant}, client {self.tenant}"
+                )
+            return ReadContext(revision.tenant, revision.revision)
         return ReadContext(self.tenant, revision)
 
     def _context_for_consistency(

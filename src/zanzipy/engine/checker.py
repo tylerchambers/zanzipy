@@ -75,6 +75,10 @@ class CheckEngine:
         """
         visited: set[tuple[str, str, str, str, str]] = set()
         debug_trace: list[str] | None = [] if self._enable_debug else None
+        if debug_trace is not None:
+            debug_trace.append(
+                f"context tenant={context.tenant} revision={context.revision}"
+            )
         counters = _Counters()
 
         allowed = self._check_recursive(
