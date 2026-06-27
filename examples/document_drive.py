@@ -8,7 +8,7 @@ Zanzibar concepts, implemented with the zanzipy client:
 - Namespaces: user, group, folder, document
 - Relations: owner, editor, viewer (direct assignments)
 - Permissions: can_view/can_edit derived via rewrite rules
-- Tuple-to-userset: documents inherit folder viewing via parent->viewer
+- Tuple-to-userset: documents include the folder.viewer subjects via parent->viewer
 
 Highlights of the model
 -----------------------
@@ -21,20 +21,23 @@ Highlights of the model
    - folder.can_view = owner + editor + viewer
    - folder.can_edit = owner + editor
    - document.can_view = owner + editor + viewer + parent->viewer
-     (inherit viewing from the containing folder)
+     (include subjects on the containing folder's viewer relation)
    - document.can_edit = owner + editor
 
 3) Subject sets and expansion: assigning a subject like "group:eng#member" to
    a relation (e.g., folder.viewer) expands to all principals who are members
    of that group.
 
-4) Tuple-to-Userset: document inherits viewing rights from its folder. We model
-   that by giving each document a direct relation "parent" that points to a
-   folder. The permission expression then follows parent to evaluate the folder
-   "viewer" relation.
+4) Tuple-to-Userset: documents include subjects from their folder's viewer
+   relation. We model that by giving each document a direct relation "parent"
+   that points to a folder. The permission expression then follows parent to
+   evaluate the folder "viewer" relation.
 
 This mirrors a common docs-and-folders sharing mental model while showing the
 core Zanzibar primitives.
+
+Run:
+    uv run python examples/document_drive.py
 """
 
 from zanzipy.client import ZanzibarClient
@@ -108,8 +111,8 @@ folder_ns = NamespaceDef(
         ),
     ),
     permissions=(
-        # Folder viewing: owners/editors/viewers, plus inherit from parent viewer;
-        # exclude any user explicitly banned on this folder
+        # Folder viewing: owners/editors/viewers, plus parent.viewer via
+        # tuple-to-userset; exclude any user explicitly banned on this folder
         PermissionDef(
             name="can_view",
             rewrite=ExclusionRule(
@@ -128,7 +131,7 @@ folder_ns = NamespaceDef(
             ),
             description=(
                 "Folder viewers include owners, editors, direct viewers, and parent "
-                "folder viewers; explicit bans take precedence."
+                "folder.viewer subjects; explicit bans take precedence."
             ),
         ),
         # Edit requires owner or editor
@@ -144,7 +147,7 @@ folder_ns = NamespaceDef(
     ),
 )
 
-# document namespace: documents live inside folders and inherit viewing
+# document namespace: documents live inside folders and include folder.viewer
 document_ns = NamespaceDef(
     name="document",
     relations=(
@@ -201,9 +204,9 @@ document_ns = NamespaceDef(
                 subtract=ComputedUsersetRule("banned"),
             ),
             description=(
-                "Document viewers include owners/editors/viewers and anyone who can "
-                "view the containing folder (via parent->viewer). Explicit bans "
-                "on the document take precedence."
+                "Document viewers include owners/editors/viewers and subjects on the "
+                "containing folder's viewer relation (via parent->viewer). Explicit "
+                "bans on the document take precedence."
             ),
         ),
         PermissionDef(
@@ -273,7 +276,7 @@ def share_folder_viewer_with_group(folder_id: str, group_id: str) -> None:
 def create_document(doc_id: str, owner: str, parent_folder_id: str) -> None:
     """Create a document, set its owner, and link to its parent folder.
 
-    The parent link enables tuple-to-userset inheritance for viewing.
+    The parent link enables tuple-to-userset traversal to folder.viewer.
     """
 
     client.write(f"document:{doc_id}", "owner", owner)
@@ -340,7 +343,7 @@ create_document("spec", owner="user:alice", parent_folder_id="proj")
 
 print("Document created:")
 print("- document:spec owner -> user:alice")
-print("- document:spec parent -> folder:proj (enables folder->doc view inheritance)\n")
+print("- document:spec parent -> folder:proj (enables doc view via folder.viewer)\n")
 
 # Grant Dora edit rights to the document directly (but not to the folder)
 share_document_editor_with_user("spec", "dora")
@@ -385,8 +388,9 @@ print(
     "subject set makes all group members viewers."
 )
 print(
-    "- Documents inherit viewing from their folder (parent->viewer) but not editing; "
-    "this demonstrates tuple-to-userset and a deliberate non-inheritance choice."
+    "- Documents include their folder's viewer subjects (parent->viewer) but "
+    "not editing; this demonstrates tuple-to-userset and a deliberate "
+    "non-inheritance choice."
 )
 
 # === Expansion (who can X?) ==================================================

@@ -2,8 +2,14 @@
 Document Drive (SQLAlchemy + Mixins)
 ----------------------------------
 
-Same scenario as `document_drive_sqlalchemy_and_dsl.py`, but domain objects use the
-new authorization mixins and a context-injected engine.
+Same scenario as `document_drive_sqlalchemy_and_dsl.py`, but domain objects use
+zanzipy authorization mixins and a context-injected engine.
+
+Requires SQLAlchemy outside a checkout:
+    pip install "zanzipy[sqlalchemy]"
+
+Run:
+    uv run python examples/document_drive_sqlalchemy_and_mixins.py
 """
 
 from dataclasses import dataclass, field

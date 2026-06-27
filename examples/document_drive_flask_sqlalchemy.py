@@ -8,12 +8,16 @@ Flask integration and request-scoped engine binding. It uses:
  - zanzipy mixins for domain-friendly authorization helpers
  - the Flask extension to initialize a ZanzibarClient and bind the engine
 
+Requires Flask and SQLAlchemy outside a checkout:
+    pip install "zanzipy[flask,sqlalchemy]"
+
 Run:
     uv run python examples/document_drive_flask_sqlalchemy.py
 
 Then visit:
     http://127.0.0.1:5000/folder/<folder_id>/can_view/<user_id>
     http://127.0.0.1:5000/document/<doc_id>/can_view/<user_id>
+    http://127.0.0.1:5000/team/<team_id>/has_member/<user_id>
 """
 
 from dataclasses import dataclass, field
