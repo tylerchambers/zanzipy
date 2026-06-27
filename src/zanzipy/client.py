@@ -1,8 +1,6 @@
 from typing import TYPE_CHECKING
 
-from .engine.checker import CheckEngine
-from .engine.expander import ExpansionEngine, SubjectSet
-from .engine.lookup import LookupEngine
+from .engine.authorization import AuthorizationEngine
 from .models import (
     CheckRequest,
     CheckResponse,
@@ -28,6 +26,7 @@ from .storage.revision import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from .engine.expander import SubjectSet
     from .schema.registry import SchemaRegistry
     from .schema.subjects import SubjectReference
     from .storage.cache.abstract.tuples import TupleCache
@@ -48,51 +47,81 @@ class ZanzibarClient:
     def __init__(
         self,
         *,
-        relations_repository: RelationRepository,
-        schema: SchemaRegistry,
+        relations_repository: RelationRepository | None = None,
+        schema: SchemaRegistry | None = None,
         tenant: TenantId | str = _DEFAULT_TENANT,
         enable_debug: bool = False,
         max_check_depth: int = 25,
         tuple_cache: TupleCache | None = None,
+        authorization_engine: AuthorizationEngine | None = None,
     ) -> None:
         """Create a tenant-scoped client over a schema and relation repository.
 
         Passing ``tuple_cache`` wraps the repository with cache-aware reads and
-        write invalidation. The client builds matching check, lookup, and
-        expansion engines from the supplied schema.
+        write invalidation before building the default authorization engine. A
+        supplied ``authorization_engine`` owns the repository, schema, traversal
+        depth, and debug settings for check, lookup, and expansion operations.
         """
-        if tuple_cache is not None:
-            from .storage.repos.decorators.cached_relations import (
-                CachedRelationRepository,
-            )
+        if authorization_engine is None:
+            if relations_repository is None:
+                raise TypeError(
+                    "relations_repository is required when authorization_engine "
+                    "is not supplied"
+                )
+            if schema is None:
+                raise TypeError(
+                    "schema is required when authorization_engine is not supplied"
+                )
 
-            relations_repository = CachedRelationRepository(
-                backend=relations_repository,
-                cache=tuple_cache,
+            if tuple_cache is not None:
+                from .storage.repos.decorators.cached_relations import (
+                    CachedRelationRepository,
+                )
+
+                relations_repository = CachedRelationRepository(
+                    backend=relations_repository,
+                    cache=tuple_cache,
+                )
+
+            authorization_engine = AuthorizationEngine(
+                relations_repository=relations_repository,
+                schema=schema,
+                max_depth=max_check_depth,
+                enable_debug=enable_debug,
             )
+        else:
+            if tuple_cache is not None:
+                raise ValueError(
+                    "tuple_cache cannot be applied when authorization_engine "
+                    "is supplied"
+                )
+            if relations_repository is None:
+                relations_repository = authorization_engine.relations_repository
+            elif relations_repository is not authorization_engine.relations_repository:
+                raise ValueError(
+                    "relations_repository must match authorization_engine repository"
+                )
+
+            if schema is None:
+                schema = authorization_engine.schema
+            elif schema is not authorization_engine.schema:
+                raise ValueError("schema must match authorization_engine schema")
+
+            max_check_depth = authorization_engine.max_depth
+            enable_debug = authorization_engine.enable_debug
 
         self.relations_repository = relations_repository
         self.schema = schema
         self.tenant = tenant if isinstance(tenant, TenantId) else TenantId(tenant)
         self.enable_debug = enable_debug
         self.max_check_depth = max_check_depth
+        self._authorization_engine = authorization_engine
 
-        self._check_engine = CheckEngine(
-            relations_repository=relations_repository,
-            schema=schema,
-            max_depth=max_check_depth,
-            enable_debug=enable_debug,
-        )
-        self._lookup_engine = LookupEngine(
-            relations_repository=relations_repository,
-            schema=schema,
-            max_depth=max_check_depth,
-        )
-        self._expansion_engine = ExpansionEngine(
-            relations_repository=relations_repository,
-            schema=schema,
-            max_depth=max_check_depth,
-        )
+    @property
+    def authorization_engine(self) -> AuthorizationEngine:
+        """Return the cohesive authorization engine used by read APIs."""
+
+        return self._authorization_engine
 
     def write(self, object: str, relation: str, subject: str) -> WriteResult:
         """Grant a relation tuple in this client's tenant."""
@@ -135,7 +164,7 @@ class ZanzibarClient:
 
         context = self._context_for_consistency(consistency)
         request = CheckRequest.from_strings(object, relation, subject)
-        response = self._check_engine.check(request, context=context)
+        response = self._authorization_engine.check(request, context=context)
         return response.allowed
 
     def check_at_revision(
@@ -168,7 +197,7 @@ class ZanzibarClient:
 
         context = self._context_for_consistency(consistency)
         request = CheckRequest.from_strings(object, relation, subject)
-        return self._check_engine.check(request, context=context)
+        return self._authorization_engine.check(request, context=context)
 
     def check_detailed_at_revision(
         self,
@@ -181,7 +210,7 @@ class ZanzibarClient:
         """Return the full check result evaluated against an exact tenant revision."""
 
         request = CheckRequest.from_strings(object, relation, subject)
-        return self._check_engine.check(
+        return self._authorization_engine.check(
             request,
             context=self._read_context_at_revision(revision),
         )
@@ -359,7 +388,7 @@ class ZanzibarClient:
         context: ReadContext,
     ) -> list[str]:
         subject_ref = Subject.from_string(subject).require_direct()
-        resources = self._lookup_engine.lookup_resources(
+        resources = self._authorization_engine.lookup_resources(
             resource_type=object_type,
             permission=relation,
             subject=subject_ref,
@@ -391,7 +420,7 @@ class ZanzibarClient:
         context: ReadContext,
     ) -> SubjectSet:
         obj = Obj.from_string(object)
-        return self._expansion_engine.expand(
+        return self._authorization_engine.expand(
             object_type=str(obj.namespace),
             object_id=str(obj.id),
             relation=relation,

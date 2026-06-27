@@ -43,8 +43,8 @@ def test_relationship_change_carries_revision_token() -> None:
     assert change.revision == token.revision
 
     with pytest.raises(TypeError, match="RevisionToken"):
-        RelationshipChange(  # type: ignore[arg-type]
-            token=token.revision,
+        RelationshipChange(
+            token=token.revision,  # type: ignore[invalid-argument-type]
             relation_tuple=tuple_,
             operation=RelationshipOperation.WRITE,
         )
