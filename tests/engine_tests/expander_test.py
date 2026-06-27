@@ -2,21 +2,19 @@ import pytest
 
 from zanzipy.engine.expander import ExpansionEngine
 from zanzipy.models.tuple import RelationTuple
+from zanzipy.schema.compiled import CompiledAuthorizationModel
 from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
 from zanzipy.schema.registry import SchemaRegistry
 from zanzipy.schema.relations import RelationDef
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
-    DirectRule,
     ExclusionRule,
     IntersectionRule,
-    RewriteRule,
     TupleToUsersetRule,
     UnionRule,
 )
 from zanzipy.schema.subjects import SubjectReference
-from zanzipy.schema.types import SchemaDefinitionType
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
@@ -27,6 +25,10 @@ DEFAULT_TENANT = TenantId("default")
 
 def _context(repo: InMemoryRelationRepository) -> ReadContext:
     return ReadContext(DEFAULT_TENANT, repo.head_revision(DEFAULT_TENANT))
+
+
+def _model(registry: SchemaRegistry) -> CompiledAuthorizationModel:
+    return CompiledAuthorizationModel.from_schema(registry)
 
 
 class TestExpansionEngine:
@@ -87,7 +89,7 @@ class TestExpansionEngine:
 
         engine = ExpansionEngine(
             relations_repository=repo,
-            schema=registry,
+            authorization_model=_model(registry),
         )
         sset = engine.expand("document", "doc", "owner", context=_context(repo))
         assert sset.users == {"user:alice", "user:bob"}
@@ -177,7 +179,7 @@ class TestExpansionEngine:
 
         engine = ExpansionEngine(
             relations_repository=repo,
-            schema=registry,
+            authorization_model=_model(registry),
         )
 
         # union
@@ -237,7 +239,10 @@ class TestExpansionEngine:
             ),
         )
 
-        engine = ExpansionEngine(relations_repository=repo, schema=registry)
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
 
         owner_twice = engine.expand(
             "document", "doc", "owner_twice", context=_context(repo)
@@ -346,7 +351,10 @@ class TestExpansionEngine:
             ),
         )
 
-        engine = ExpansionEngine(relations_repository=repo, schema=registry)
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
 
         owner_and_viewer = engine.expand(
             "document", "doc", "owner_and_viewer", context=_context(repo)
@@ -412,12 +420,12 @@ class TestExpansionEngine:
 
         engine = ExpansionEngine(
             relations_repository=repo,
-            schema=registry,
+            authorization_model=_model(registry),
         )
         sset = engine.expand("document", "doc", "can_view", context=_context(repo))
         assert sset.users == {"user:alice"}
 
-    def test_exceptions_and_validation(self, monkeypatch) -> None:
+    def test_exceptions_and_validation(self) -> None:
         # Base registry with one simple relation
         registry = SchemaRegistry()
         ns = NamespaceDef(
@@ -432,7 +440,10 @@ class TestExpansionEngine:
         registry.register(ns)
 
         repo = InMemoryRelationRepository()
-        engine = ExpansionEngine(relations_repository=repo, schema=registry)
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
 
         # Invalid namespace identifier -> IdentifierValidationError from NamespaceId
         from zanzipy.models.errors import IdentifierValidationError
@@ -443,187 +454,6 @@ class TestExpansionEngine:
         # Unknown relation in known namespace -> ValueError from registry
         with pytest.raises(ValueError, match="Unknown relation or permission"):
             engine.expand("document", "doc", "missing", context=_context(repo))
-
-        # Permission missing rewrite -> ValueError("Permission has no rewrite")
-        def _fake_get_def(self, object_type: str, relation: str) -> dict:  # type: ignore[override]
-            return {
-                "type": SchemaDefinitionType.PERMISSION,
-                "name": relation,
-                "rewrite": None,
-            }
-
-        monkeypatch.setattr(
-            SchemaRegistry,
-            "get_relation_definition",
-            _fake_get_def,
-            raising=False,
-        )
-
-        with pytest.raises(ValueError, match="Permission has no rewrite"):
-            engine.expand("document", "doc", "perm", context=_context(repo))
-
-        # Unknown definition type -> ValueError("Unknown definition type")
-        def _fake_get_def2(self, object_type: str, relation: str) -> dict:  # type: ignore[override]
-            return {"type": "weird", "name": relation}
-
-        monkeypatch.setattr(
-            SchemaRegistry,
-            "get_relation_definition",
-            _fake_get_def2,
-            raising=False,
-        )
-
-        with pytest.raises(ValueError, match="Unknown definition type"):
-            engine.expand("document", "doc", "weird", context=_context(repo))
-
-    def test_compiled_cache_is_used_and_populated(self) -> None:
-        registry = SchemaRegistry()
-        ns = NamespaceDef(
-            name="doc",
-            relations=(
-                RelationDef.with_subjects(
-                    "viewer", (SubjectReference.from_dict({"namespace": "user"}),)
-                ),
-            ),
-            permissions=(
-                PermissionDef(name="view", rewrite=ComputedUsersetRule("viewer")),
-            ),
-        )
-        registry.register(ns)
-
-        repo = InMemoryRelationRepository()
-
-        # Fake cache that lets us assert get/set interactions
-        from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
-
-        class _FakeCache(CompiledRuleCache[RewriteRule]):
-            def __init__(self) -> None:
-                self.get_calls: list[tuple[str, str]] = []
-                self.set_calls: list[tuple[str, str, RewriteRule]] = []
-                self._store: dict[tuple[str, str], RewriteRule] = {}
-
-            def get(self, namespace: str, name: str) -> RewriteRule | None:
-                self.get_calls.append((namespace, name))
-                return self._store.get((namespace, name))
-
-            def set(self, namespace: str, name: str, compiled: RewriteRule) -> None:
-                self.set_calls.append((namespace, name, compiled))
-                self._store[(namespace, name)] = compiled
-
-            def invalidate(self, namespace: str, name: str) -> None:
-                self._store.pop((namespace, name), None)
-
-            def invalidate_namespace(self, namespace: str) -> None:
-                for k in list(self._store.keys()):
-                    if k[0] == namespace:
-                        self._store.pop(k, None)
-
-        cache = _FakeCache()
-        engine = ExpansionEngine(
-            relations_repository=repo,
-            schema=registry,
-            compiled_rules_cache=cache,  # inject
-        )
-
-        # First call: cache miss -> set occurs with a RewriteRule
-        engine.expand("doc", "d1", "view", context=_context(repo))
-        assert cache.get_calls[0] == ("doc", "view")
-        ns_name, rel_name, compiled = cache.set_calls[0]
-        assert (ns_name, rel_name) == ("doc", "view")
-        assert isinstance(
-            compiled,
-            (
-                DirectRule,
-                ComputedUsersetRule,
-                UnionRule,
-                IntersectionRule,
-                ExclusionRule,
-                TupleToUsersetRule,
-            ),
-        )
-
-        # Second call: should hit cache and not call set again
-        before_sets = len(cache.set_calls)
-        engine.expand("doc", "d2", "view", context=_context(repo))
-        assert len(cache.set_calls) == before_sets
-
-    def test_compiled_cache_refreshes_after_schema_update(self) -> None:
-        registry = SchemaRegistry()
-        ns = NamespaceDef(
-            name="doc",
-            relations=(
-                RelationDef.with_subjects(
-                    "viewer", (SubjectReference.from_dict({"namespace": "user"}),)
-                ),
-                RelationDef.with_subjects(
-                    "editor", (SubjectReference.from_dict({"namespace": "user"}),)
-                ),
-            ),
-            permissions=(
-                PermissionDef(name="view", rewrite=ComputedUsersetRule("viewer")),
-            ),
-        )
-        registry.register(ns)
-
-        repo = InMemoryRelationRepository()
-        repo.write(
-            WriteContext(DEFAULT_TENANT),
-            (
-                TupleMutation.touch(
-                    RelationTuple.from_string("doc:1#viewer@user:alice")
-                ),
-            ),
-        )
-
-        from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
-
-        class _FakeCache(CompiledRuleCache[RewriteRule]):
-            def __init__(self) -> None:
-                self.set_calls: list[tuple[str, str, RewriteRule]] = []
-                self._store: dict[tuple[str, str], RewriteRule] = {}
-
-            def get(self, namespace: str, name: str) -> RewriteRule | None:
-                return self._store.get((namespace, name))
-
-            def set(self, namespace: str, name: str, compiled: RewriteRule) -> None:
-                self.set_calls.append((namespace, name, compiled))
-                self._store[(namespace, name)] = compiled
-
-            def invalidate(self, namespace: str, name: str) -> None:
-                self._store.pop((namespace, name), None)
-
-            def invalidate_namespace(self, namespace: str) -> None:
-                for key in list(self._store):
-                    if key[0] == namespace:
-                        self._store.pop(key, None)
-
-        cache = _FakeCache()
-        engine = ExpansionEngine(
-            relations_repository=repo,
-            schema=registry,
-            compiled_rules_cache=cache,
-        )
-
-        initial = engine.expand("doc", "1", "view", context=_context(repo))
-        assert initial.users == {"user:alice"}
-
-        registry.update_namespace(
-            NamespaceDef(
-                name="doc",
-                relations=tuple(ns.relations.values()),
-                permissions=(
-                    PermissionDef(name="view", rewrite=ComputedUsersetRule("editor")),
-                ),
-            )
-        )
-
-        refreshed = engine.expand("doc", "1", "view", context=_context(repo))
-        assert refreshed.users == set()
-        view_sets = [call for call in cache.set_calls if call[:2] == ("doc", "view")]
-        assert len(view_sets) == 2
-        _, _, compiled = view_sets[-1]
-        assert isinstance(compiled, ComputedUsersetRule)
-        assert compiled.relation == "editor"
 
 
 class TestSubjectSetOps:
@@ -675,7 +505,7 @@ class TestSubjectSetOps:
         repo = InMemoryRelationRepository()
         engine = ExpansionEngine(
             relations_repository=repo,
-            schema=registry,
+            authorization_model=_model(registry),
             max_depth=3,
         )
         sset = engine.expand("doc", "d1", "x", context=_context(repo))

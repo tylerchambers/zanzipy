@@ -1,3 +1,4 @@
+from .compiled import CompiledAuthorizationModel, CompiledRelation
 from .namespace import NamespaceDef
 from .permissions import PermissionDef
 from .registry import SchemaRegistry
@@ -16,6 +17,8 @@ from .subjects import SubjectReference
 from .types import RewriteRuleType, SchemaDefinitionType
 
 __all__ = [
+    "CompiledAuthorizationModel",
+    "CompiledRelation",
     "ComputedUsersetRule",
     "DirectRule",
     "ExclusionRule",

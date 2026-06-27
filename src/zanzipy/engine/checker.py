@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from zanzipy.engine.resolver import RuleResolver
 from zanzipy.models import (
     CheckRequest,
     CheckResponse,
@@ -22,8 +21,7 @@ from zanzipy.schema.rules import (
 )
 
 if TYPE_CHECKING:
-    from zanzipy.schema.registry import SchemaRegistry
-    from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
+    from zanzipy.schema.compiled import CompiledAuthorizationModel
     from zanzipy.storage.repos.abstract.relations import RelationRepository
     from zanzipy.storage.revision import ReadContext
 
@@ -39,7 +37,7 @@ class _Counters:
 class CheckEngine:
     """Evaluates Zanzibar relation and permission checks at a repository revision.
 
-    The engine resolves schema rewrites, follows subject-set edges, short-circuits
+    The engine resolves compiled rewrites, follows subject-set edges, short-circuits
     boolean operators where possible, and bounds traversal with cycle and depth
     checks so callers receive a deterministic authorization result.
     """
@@ -48,19 +46,15 @@ class CheckEngine:
         self,
         *,
         relations_repository: RelationRepository,
-        schema: SchemaRegistry,
+        authorization_model: CompiledAuthorizationModel,
         max_depth: int = 25,
         enable_debug: bool = False,
-        compiled_rules_cache: CompiledRuleCache[RewriteRule] | None = None,
     ) -> None:
-        """Create a checker over a relation repository and schema registry."""
+        """Create a checker over a relation repository and compiled model."""
         self._relations = relations_repository
         self._max_depth = max_depth
         self._enable_debug = enable_debug
-        self._resolver = RuleResolver(
-            schema=schema,
-            compiled_rules_cache=compiled_rules_cache,
-        )
+        self._model = authorization_model
 
     def check(
         self,
@@ -135,9 +129,9 @@ class CheckEngine:
                 )
                 debug_trace.append(msg)
 
-            # Resolve the rewrite rule for (object_type, relation)
+            # Resolve the compiled rewrite rule for (object_type, relation)
             try:
-                rewrite = self._resolver.resolve(object_type, relation)
+                rewrite = self._model.resolve(object_type, relation)
             except ValueError as exc:
                 if debug_trace is not None:
                     debug_trace.append(f"{'  ' * depth}Error: {exc}")

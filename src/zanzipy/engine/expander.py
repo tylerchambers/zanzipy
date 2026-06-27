@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from zanzipy.engine.resolver import RuleResolver
 from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject, TupleFilter
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
@@ -15,8 +14,7 @@ from zanzipy.schema.rules import (
 )
 
 if TYPE_CHECKING:
-    from zanzipy.schema.registry import SchemaRegistry
-    from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
+    from zanzipy.schema.compiled import CompiledAuthorizationModel
     from zanzipy.storage.repos.abstract.relations import RelationRepository
     from zanzipy.storage.revision import ReadContext
 
@@ -66,17 +64,13 @@ class ExpansionEngine:
         self,
         *,
         relations_repository: RelationRepository,
-        schema: SchemaRegistry,
+        authorization_model: CompiledAuthorizationModel,
         max_depth: int = 25,
-        compiled_rules_cache: CompiledRuleCache[RewriteRule] | None = None,
     ) -> None:
-        """Create an expansion engine over a relation repository and schema."""
+        """Create an expansion engine over a repository and compiled model."""
         self._relations = relations_repository
         self._max_depth = max_depth
-        self._resolver = RuleResolver(
-            schema=schema,
-            compiled_rules_cache=compiled_rules_cache,
-        )
+        self._model = authorization_model
 
     def expand(
         self,
@@ -88,8 +82,8 @@ class ExpansionEngine:
     ) -> SubjectSet:
         """Return subjects that grant a relation or permission on one object.
 
-        Inputs are validated against the value-object rules and schema. Expansion
-        reads only from the supplied tenant revision context.
+        Inputs are validated against value-object rules and the compiled model.
+        Expansion reads only from the supplied tenant revision context.
         """
 
         # Validate identifiers
@@ -124,7 +118,7 @@ class ExpansionEngine:
 
         visited.add(key)
         try:
-            rewrite = self._resolver.resolve(object_type, relation)
+            rewrite = self._model.resolve(object_type, relation)
             return self._evaluate_rule(
                 rewrite=rewrite,
                 object_type=object_type,

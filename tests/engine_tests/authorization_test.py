@@ -1,40 +1,18 @@
 from zanzipy.engine.authorization import AuthorizationEngine
 from zanzipy.models import CheckRequest, RelationTuple, Subject
+from zanzipy.schema.compiled import CompiledAuthorizationModel
 from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
 from zanzipy.schema.registry import SchemaRegistry
 from zanzipy.schema.relations import RelationDef
-from zanzipy.schema.rules import ComputedUsersetRule, RewriteRule
+from zanzipy.schema.rules import ComputedUsersetRule, TupleToUsersetRule, UnionRule
 from zanzipy.schema.subjects import SubjectReference
-from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
 from zanzipy.storage.cache.concrete.lru import LruTupleCache
+from zanzipy.storage.cache.concrete.lru_rules import LruCompiledRuleCache
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
 from zanzipy.storage.revision import ReadContext, TenantId, TupleMutation, WriteContext
 
 DEFAULT_TENANT = TenantId("default")
-
-
-class _FakeCompiledRuleCache(CompiledRuleCache[RewriteRule]):
-    def __init__(self) -> None:
-        self.store: dict[tuple[str, str], RewriteRule] = {}
-        self.get_calls: list[tuple[str, str]] = []
-        self.set_calls: list[tuple[str, str, RewriteRule]] = []
-
-    def get(self, namespace: str, name: str) -> RewriteRule | None:
-        self.get_calls.append((namespace, name))
-        return self.store.get((namespace, name))
-
-    def set(self, namespace: str, name: str, compiled: RewriteRule) -> None:
-        self.set_calls.append((namespace, name, compiled))
-        self.store[(namespace, name)] = compiled
-
-    def invalidate(self, namespace: str, name: str) -> None:
-        self.store.pop((namespace, name), None)
-
-    def invalidate_namespace(self, namespace: str) -> None:
-        for key in tuple(self.store):
-            if key[0] == namespace:
-                self.store.pop(key)
 
 
 def _registry() -> SchemaRegistry:
@@ -52,6 +30,65 @@ def _registry() -> SchemaRegistry:
         )
     )
     return registry
+
+
+def _member_namespace(name: str) -> NamespaceDef:
+    return NamespaceDef(
+        name=name,
+        relations=(
+            RelationDef.with_subjects(
+                "member",
+                (SubjectReference.from_dict({"namespace": "user"}),),
+            ),
+        ),
+    )
+
+
+def _viewable_namespace(name: str) -> NamespaceDef:
+    return NamespaceDef(
+        name=name,
+        relations=(
+            RelationDef.with_subjects(
+                "viewer",
+                (SubjectReference.from_dict({"namespace": "user"}),),
+            ),
+        ),
+    )
+
+
+def _lookup_document_namespace(
+    *,
+    userset_namespace: str,
+    parent_namespace: str,
+) -> NamespaceDef:
+    return NamespaceDef(
+        name="document",
+        relations=(
+            RelationDef.with_subjects(
+                "viewer",
+                (
+                    SubjectReference.from_dict(
+                        {"namespace": userset_namespace, "relation": "member"}
+                    ),
+                ),
+            ),
+            RelationDef.with_subjects(
+                "parent",
+                (SubjectReference.from_dict({"namespace": parent_namespace}),),
+            ),
+        ),
+        permissions=(
+            PermissionDef(
+                "can_view",
+                UnionRule(
+                    (
+                        ComputedUsersetRule("viewer"),
+                        TupleToUsersetRule("parent", "viewer"),
+                    )
+                ),
+            ),
+        ),
+    )
 
 
 def _repo_with_owner() -> InMemoryRelationRepository:
@@ -164,10 +201,12 @@ def test_authorization_engine_owns_tuple_cache_decorator() -> None:
     assert final_hits > lookup_hits
 
 
-def test_authorization_engine_reuses_compiled_rule_cache_across_operations() -> None:
+def test_authorization_engine_shares_compiled_model_across_operations() -> None:
     registry = _registry()
     repo = _repo_with_owner()
-    cache = _FakeCompiledRuleCache()
+    cache = LruCompiledRuleCache(max_entries=10, ttl_seconds=None)
+    cached = ComputedUsersetRule("owner")
+    cache.set("document", "can_view", cached)
     engine = AuthorizationEngine(
         relations_repository=repo,
         schema=registry,
@@ -175,13 +214,15 @@ def test_authorization_engine_reuses_compiled_rule_cache_across_operations() -> 
     )
     context = _context(repo)
 
+    assert engine.authorization_model.resolve("document", "can_view") is cached
+    assert engine._checker._model is engine.authorization_model
+    assert engine._expander._model is engine.authorization_model
+    assert engine._lookup._model is engine.authorization_model
+
     response = engine.check(
         CheckRequest.from_strings("document:doc1", "can_view", "user:alice"),
         context=context,
     )
-    assert response.allowed is True
-    sets_after_check = len(cache.set_calls)
-
     expanded = engine.expand("document", "doc1", "can_view", context=context)
     resources = engine.lookup_resources(
         resource_type="document",
@@ -190,8 +231,81 @@ def test_authorization_engine_reuses_compiled_rule_cache_across_operations() -> 
         context=context,
     )
 
+    assert response.allowed is True
     assert expanded.users == {"user:alice"}
     assert [str(resource) for resource in resources] == ["document:doc1"]
-    assert len(cache.set_calls) == sets_after_check
-    assert cache.get_calls.count(("document", "can_view")) == 3
-    assert cache.get_calls.count(("document", "owner")) == 3
+    assert engine.authorization_model.resolve("document", "can_view") is cached
+
+
+def test_authorization_engine_rebuild_refreshes_lookup_metadata() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        (
+            _member_namespace("group"),
+            _member_namespace("team"),
+            _viewable_namespace("folder"),
+            _viewable_namespace("project"),
+            _lookup_document_namespace(
+                userset_namespace="group",
+                parent_namespace="folder",
+            ),
+        )
+    )
+    old_model = CompiledAuthorizationModel.from_schema(registry)
+
+    repo = InMemoryRelationRepository()
+    repo.write(
+        WriteContext(DEFAULT_TENANT),
+        tuple(
+            TupleMutation.touch(RelationTuple.from_string(tuple_))
+            for tuple_ in (
+                "group:old#member@user:alice",
+                "team:new#member@user:alice",
+                "document:group-doc#viewer@group:old#member",
+                "document:team-doc#viewer@team:new#member",
+                "folder:old#viewer@user:alice",
+                "project:new#viewer@user:alice",
+                "document:folder-doc#parent@folder:old",
+                "document:project-doc#parent@project:new",
+            )
+        ),
+    )
+    old_engine = AuthorizationEngine(
+        relations_repository=repo,
+        schema=registry,
+        authorization_model=old_model,
+    )
+    context = _context(repo)
+
+    registry.update_namespace(
+        _lookup_document_namespace(
+            userset_namespace="team",
+            parent_namespace="project",
+        )
+    )
+
+    old_resources = old_engine.lookup_resources(
+        resource_type="document",
+        permission="can_view",
+        subject=Subject.from_string("user:alice"),
+        context=context,
+    )
+    rebuilt_engine = AuthorizationEngine(
+        relations_repository=repo,
+        schema=registry,
+    )
+    rebuilt_resources = rebuilt_engine.lookup_resources(
+        resource_type="document",
+        permission="can_view",
+        subject=Subject.from_string("user:alice"),
+        context=context,
+    )
+
+    assert [str(resource) for resource in old_resources] == [
+        "document:folder-doc",
+        "document:group-doc",
+    ]
+    assert [str(resource) for resource in rebuilt_resources] == [
+        "document:project-doc",
+        "document:team-doc",
+    ]

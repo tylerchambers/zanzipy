@@ -1,5 +1,6 @@
 from zanzipy.engine.checker import CheckEngine
 from zanzipy.models import CheckRequest, RelationTuple
+from zanzipy.schema.compiled import CompiledAuthorizationModel
 from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
 from zanzipy.schema.registry import SchemaRegistry
@@ -10,6 +11,10 @@ from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepo
 from zanzipy.storage.revision import ReadContext, TenantId, TupleMutation, WriteContext
 
 DEFAULT_TENANT = TenantId("default")
+
+
+def _model(registry: SchemaRegistry) -> CompiledAuthorizationModel:
+    return CompiledAuthorizationModel.from_schema(registry)
 
 
 def test_direct_check_respects_write_and_delete_revisions() -> None:
@@ -26,7 +31,10 @@ def test_direct_check_respects_write_and_delete_revisions() -> None:
         )
     )
     repo = InMemoryRelationRepository()
-    engine = CheckEngine(relations_repository=repo, schema=registry)
+    engine = CheckEngine(
+        relations_repository=repo,
+        authorization_model=_model(registry),
+    )
     tuple_ = RelationTuple.from_string("document:doc1#viewer@user:alice")
     before = repo.head_revision(DEFAULT_TENANT)
     write = repo.write(WriteContext(DEFAULT_TENANT), (TupleMutation.touch(tuple_),))
@@ -80,7 +88,10 @@ def test_group_membership_recursion_uses_same_revision() -> None:
         ]
     )
     repo = InMemoryRelationRepository()
-    engine = CheckEngine(relations_repository=repo, schema=registry)
+    engine = CheckEngine(
+        relations_repository=repo,
+        authorization_model=_model(registry),
+    )
     edge = RelationTuple.from_string("document:doc1#viewer@group:eng#member")
     member = RelationTuple.from_string("group:eng#member@user:alice")
     edge_write = repo.write(WriteContext(DEFAULT_TENANT), (TupleMutation.touch(edge),))
@@ -147,7 +158,10 @@ def test_tuple_to_userset_recursion_uses_same_revision() -> None:
         ]
     )
     repo = InMemoryRelationRepository()
-    engine = CheckEngine(relations_repository=repo, schema=registry)
+    engine = CheckEngine(
+        relations_repository=repo,
+        authorization_model=_model(registry),
+    )
     parent = RelationTuple.from_string("document:doc1#parent@folder:root")
     viewer = RelationTuple.from_string("folder:root#viewer@user:alice")
     parent_write = repo.write(

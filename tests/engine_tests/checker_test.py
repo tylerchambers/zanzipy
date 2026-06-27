@@ -1,6 +1,7 @@
 from zanzipy.engine.checker import CheckEngine
 from zanzipy.models.check import CheckRequest
 from zanzipy.models.tuple import RelationTuple
+from zanzipy.schema.compiled import CompiledAuthorizationModel
 from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
 from zanzipy.schema.registry import SchemaRegistry
@@ -9,12 +10,10 @@ from zanzipy.schema.rules import (
     ComputedUsersetRule,
     ExclusionRule,
     IntersectionRule,
-    RewriteRule,
     TupleToUsersetRule,
     UnionRule,
 )
 from zanzipy.schema.subjects import SubjectReference
-from zanzipy.schema.types import SchemaDefinitionType
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
@@ -25,6 +24,10 @@ DEFAULT_TENANT = TenantId("default")
 
 def _context(repo: InMemoryRelationRepository) -> ReadContext:
     return ReadContext(DEFAULT_TENANT, repo.head_revision(DEFAULT_TENANT))
+
+
+def _model(registry: SchemaRegistry) -> CompiledAuthorizationModel:
+    return CompiledAuthorizationModel.from_schema(registry)
 
 
 class TestCheckEngine:
@@ -52,7 +55,10 @@ class TestCheckEngine:
             ),
         )
 
-        engine = CheckEngine(relations_repository=repo, schema=registry)
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
 
         # Positive
         req = CheckRequest.from_strings("document:doc1", "owner", "user:alice")
@@ -112,7 +118,10 @@ class TestCheckEngine:
             ),
         )
 
-        engine = CheckEngine(relations_repository=repo, schema=registry)
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
 
         # Viewer via owner
         req = CheckRequest.from_strings("document:doc1", "viewer", "user:alice")
@@ -218,7 +227,10 @@ class TestCheckEngine:
             ),
         )
 
-        engine = CheckEngine(relations_repository=repo, schema=registry)
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
 
         # Intersection
         req = CheckRequest.from_strings("document:doc1", "can_edit", "user:alice")
@@ -273,7 +285,10 @@ class TestCheckEngine:
             ),
         )
 
-        engine = CheckEngine(relations_repository=repo, schema=registry)
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
 
         req = CheckRequest.from_strings("document:doc", "owner_twice", "user:alice")
         assert engine.check(req, context=_context(repo)).allowed is True
@@ -343,7 +358,10 @@ class TestCheckEngine:
             ),
         )
 
-        engine = CheckEngine(relations_repository=repo, schema=registry)
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
 
         req = CheckRequest.from_strings("document:doc1", "can_view", "user:alice")
         assert engine.check(req, context=_context(repo)).allowed is True
@@ -368,7 +386,7 @@ class TestCheckEngine:
         repo = InMemoryRelationRepository()
         engine = CheckEngine(
             relations_repository=repo,
-            schema=registry,
+            authorization_model=_model(registry),
             enable_debug=True,
         )
 
@@ -389,76 +407,6 @@ class TestCheckEngine:
         assert res.allowed is False
         assert res.debug_trace is not None
         assert any("Unknown namespace" in line for line in res.debug_trace)
-
-    def test_permission_missing_rewrite(self, monkeypatch) -> None:
-        registry = SchemaRegistry()
-        ns = NamespaceDef(
-            name="document",
-            relations=(),
-            permissions=(),
-        )
-        registry.register(ns)
-
-        def _fake_get_def(self, object_type: str, relation: str) -> dict:  # type: ignore[override]
-            return {
-                "type": SchemaDefinitionType.PERMISSION,
-                "name": relation,
-                "rewrite": None,
-            }
-
-        # Patch on the class, not the instance (slots prevents instance patching)
-        monkeypatch.setattr(
-            SchemaRegistry,
-            "get_relation_definition",
-            _fake_get_def,
-            raising=False,
-        )
-
-        repo = InMemoryRelationRepository()
-        engine = CheckEngine(
-            relations_repository=repo,
-            schema=registry,
-            enable_debug=True,
-        )
-
-        res = engine.check(
-            CheckRequest.from_strings("document:doc1", "can_x", "user:alice"),
-            context=_context(repo),
-        )
-        assert res.allowed is False
-        assert res.debug_trace is not None
-        assert any("Permission has no rewrite" in line for line in res.debug_trace)
-
-    def test_unknown_definition_type(self, monkeypatch) -> None:
-        registry = SchemaRegistry()
-        ns = NamespaceDef(name="document", relations=(), permissions=())
-        registry.register(ns)
-
-        def _fake_get_def(self, object_type: str, relation: str) -> dict:  # type: ignore[override]
-            return {"type": "weird", "name": relation}
-
-        # Patch on the class, not the instance (slots prevents instance patching)
-        monkeypatch.setattr(
-            SchemaRegistry,
-            "get_relation_definition",
-            _fake_get_def,
-            raising=False,
-        )
-
-        repo = InMemoryRelationRepository()
-        engine = CheckEngine(
-            relations_repository=repo,
-            schema=registry,
-            enable_debug=True,
-        )
-
-        res = engine.check(
-            CheckRequest.from_strings("document:doc1", "perm", "user:alice"),
-            context=_context(repo),
-        )
-        assert res.allowed is False
-        assert res.debug_trace is not None
-        assert any("Unknown definition type" in line for line in res.debug_trace)
 
     def test_depth_limit_reached(self) -> None:
         # Build a chain of relations longer than max_depth
@@ -491,7 +439,7 @@ class TestCheckEngine:
         repo = InMemoryRelationRepository()
         engine = CheckEngine(
             relations_repository=repo,
-            schema=registry,
+            authorization_model=_model(registry),
             max_depth=3,
             enable_debug=True,
         )
@@ -528,7 +476,7 @@ class TestCheckEngine:
         repo = InMemoryRelationRepository()
         engine = CheckEngine(
             relations_repository=repo,
-            schema=registry,
+            authorization_model=_model(registry),
             enable_debug=True,
         )
 
@@ -541,142 +489,3 @@ class TestCheckEngine:
         assert res.debug_trace is not None
         # Should not examine any tuples because there are none
         assert res.tuples_examined == 0
-
-    def test_compiled_cache_is_used_and_populated(self) -> None:
-        registry = SchemaRegistry()
-        ns = NamespaceDef(
-            name="doc",
-            relations=(
-                RelationDef.with_subjects(
-                    "viewer", (SubjectReference.from_dict({"namespace": "user"}),)
-                ),
-            ),
-            permissions=(
-                PermissionDef(name="view", rewrite=ComputedUsersetRule("viewer")),
-            ),
-        )
-        registry.register(ns)
-
-        repo = InMemoryRelationRepository()
-
-        from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
-
-        class _FakeCache(CompiledRuleCache[RewriteRule]):
-            def __init__(self) -> None:
-                self.get_calls: list[tuple[str, str]] = []
-                self.set_calls: list[tuple[str, str, RewriteRule]] = []
-                self._store: dict[tuple[str, str], RewriteRule] = {}
-
-            def get(self, namespace: str, name: str) -> RewriteRule | None:
-                self.get_calls.append((namespace, name))
-                return self._store.get((namespace, name))
-
-            def set(self, namespace: str, name: str, compiled: RewriteRule) -> None:
-                self.set_calls.append((namespace, name, compiled))
-                self._store[(namespace, name)] = compiled
-
-            def invalidate(self, namespace: str, name: str) -> None:
-                self._store.pop((namespace, name), None)
-
-            def invalidate_namespace(self, namespace: str) -> None:
-                for k in list(self._store.keys()):
-                    if k[0] == namespace:
-                        self._store.pop(k, None)
-
-        cache = _FakeCache()
-        engine = CheckEngine(
-            relations_repository=repo,
-            schema=registry,
-            compiled_rules_cache=cache,
-        )
-
-        req = CheckRequest.from_strings("doc:1", "view", "user:alice")
-
-        # First call: miss -> set stored with RewriteRule
-        engine.check(req, context=_context(repo))
-        assert cache.get_calls[0] == ("doc", "view")
-        ns_name, rel_name, compiled = cache.set_calls[0]
-        assert (ns_name, rel_name) == ("doc", "view")
-        assert isinstance(compiled, RewriteRule)
-
-        # Second call: hit -> no additional set
-        before = len(cache.set_calls)
-        engine.check(req, context=_context(repo))
-        assert len(cache.set_calls) == before
-
-    def test_compiled_cache_refreshes_after_schema_update(self) -> None:
-        registry = SchemaRegistry()
-        ns = NamespaceDef(
-            name="doc",
-            relations=(
-                RelationDef.with_subjects(
-                    "viewer", (SubjectReference.from_dict({"namespace": "user"}),)
-                ),
-                RelationDef.with_subjects(
-                    "editor", (SubjectReference.from_dict({"namespace": "user"}),)
-                ),
-            ),
-            permissions=(
-                PermissionDef(name="view", rewrite=ComputedUsersetRule("viewer")),
-            ),
-        )
-        registry.register(ns)
-
-        repo = InMemoryRelationRepository()
-        repo.write(
-            WriteContext(DEFAULT_TENANT),
-            (
-                TupleMutation.touch(
-                    RelationTuple.from_string("doc:1#viewer@user:alice")
-                ),
-            ),
-        )
-
-        from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
-
-        class _FakeCache(CompiledRuleCache[RewriteRule]):
-            def __init__(self) -> None:
-                self.set_calls: list[tuple[str, str, RewriteRule]] = []
-                self._store: dict[tuple[str, str], RewriteRule] = {}
-
-            def get(self, namespace: str, name: str) -> RewriteRule | None:
-                return self._store.get((namespace, name))
-
-            def set(self, namespace: str, name: str, compiled: RewriteRule) -> None:
-                self.set_calls.append((namespace, name, compiled))
-                self._store[(namespace, name)] = compiled
-
-            def invalidate(self, namespace: str, name: str) -> None:
-                self._store.pop((namespace, name), None)
-
-            def invalidate_namespace(self, namespace: str) -> None:
-                for key in list(self._store):
-                    if key[0] == namespace:
-                        self._store.pop(key, None)
-
-        cache = _FakeCache()
-        engine = CheckEngine(
-            relations_repository=repo,
-            schema=registry,
-            compiled_rules_cache=cache,
-        )
-        req = CheckRequest.from_strings("doc:1", "view", "user:alice")
-
-        assert engine.check(req, context=_context(repo)).allowed is True
-
-        registry.update_namespace(
-            NamespaceDef(
-                name="doc",
-                relations=tuple(ns.relations.values()),
-                permissions=(
-                    PermissionDef(name="view", rewrite=ComputedUsersetRule("editor")),
-                ),
-            )
-        )
-
-        assert engine.check(req, context=_context(repo)).allowed is False
-        view_sets = [call for call in cache.set_calls if call[:2] == ("doc", "view")]
-        assert len(view_sets) == 2
-        _, _, refreshed = view_sets[-1]
-        assert isinstance(refreshed, ComputedUsersetRule)
-        assert refreshed.relation == "editor"
