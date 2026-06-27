@@ -54,16 +54,34 @@ class LookupEngine:
         Relation(permission)
         subject.require_direct()
 
-        resources = self._lookup_recursive(
+        resources = self._lookup_relation(
             resource_type=resource_type,
             relation=permission,
             subject=subject,
             context=context,
             depth=0,
-            visited=set(),
-            track_state=True,
         )
         return sorted(resources, key=str)
+
+    def _lookup_relation(
+        self,
+        *,
+        resource_type: str,
+        relation: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+    ) -> set[Obj]:
+        """Start an independent reverse relation lookup with a fresh cycle stack."""
+
+        return self._lookup_recursive(
+            resource_type=resource_type,
+            relation=relation,
+            subject=subject,
+            context=context,
+            depth=depth,
+            visited=set(),
+        )
 
     def _lookup_recursive(
         self,
@@ -74,7 +92,6 @@ class LookupEngine:
         context: ReadContext,
         depth: int,
         visited: set[tuple[str, str, str]],
-        track_state: bool,
     ) -> set[Obj]:
         if depth > self._max_depth:
             return set()
@@ -84,7 +101,7 @@ class LookupEngine:
         except ValueError:
             return set()
 
-        if not track_state or isinstance(rewrite, (DirectRule, ThisRule)):
+        if isinstance(rewrite, (DirectRule, ThisRule)):
             return self._evaluate_rule(
                 rewrite=rewrite,
                 resource_type=resource_type,
@@ -131,7 +148,6 @@ class LookupEngine:
                 subject=subject,
                 context=context,
                 depth=depth,
-                visited=visited,
             )
 
         if isinstance(rewrite, ComputedUsersetRule):
@@ -142,7 +158,6 @@ class LookupEngine:
                 context=context,
                 depth=depth + 1,
                 visited=visited,
-                track_state=True,
             )
 
         if isinstance(rewrite, TupleToUsersetRule):
@@ -153,7 +168,6 @@ class LookupEngine:
                 subject=subject,
                 context=context,
                 depth=depth,
-                visited=visited,
             )
 
         if isinstance(rewrite, UnionRule):
@@ -222,7 +236,6 @@ class LookupEngine:
         subject: Subject,
         context: ReadContext,
         depth: int,
-        visited: set[tuple[str, str, str]],
     ) -> set[Obj]:
         resources: set[Obj] = set()
         for direct_subject in self._direct_subject_matches(subject):
@@ -246,7 +259,6 @@ class LookupEngine:
             subject=subject,
             context=context,
             depth=depth,
-            visited=visited,
         ):
             resources.update(
                 t.object
@@ -273,21 +285,18 @@ class LookupEngine:
         subject: Subject,
         context: ReadContext,
         depth: int,
-        visited: set[tuple[str, str, str]],
     ) -> set[Obj]:
         resources: set[Obj] = set()
         for target_type in self._tuple_to_userset_target_types(
             resource_type=resource_type,
             tuple_relation=tuple_relation,
         ):
-            parent_resources = self._lookup_recursive(
+            parent_resources = self._lookup_relation(
                 resource_type=target_type,
                 relation=computed_relation,
                 subject=subject,
                 context=context,
                 depth=depth + 1,
-                visited=visited,
-                track_state=False,
             )
             for parent in parent_resources:
                 parent_subject = Subject.from_object(parent)
@@ -314,21 +323,18 @@ class LookupEngine:
         subject: Subject,
         context: ReadContext,
         depth: int,
-        visited: set[tuple[str, str, str]],
     ) -> set[Subject]:
         usersets: set[Subject] = set()
         for subject_type, subject_relation in self._allowed_userset_refs(
             resource_type,
             relation,
         ):
-            containing_objects = self._lookup_recursive(
+            containing_objects = self._lookup_relation(
                 resource_type=subject_type,
                 relation=subject_relation,
                 subject=subject,
                 context=context,
                 depth=depth + 1,
-                visited=visited,
-                track_state=False,
             )
             usersets.update(
                 Subject.from_parts(
