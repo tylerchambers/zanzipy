@@ -1,0 +1,323 @@
+from typing import TYPE_CHECKING
+
+from zanzipy.client import ZanzibarClient
+from zanzipy.models import RelationTuple, TupleFilter
+from zanzipy.schema.namespace import NamespaceDef
+from zanzipy.schema.permissions import PermissionDef
+from zanzipy.schema.registry import SchemaRegistry
+from zanzipy.schema.relations import RelationDef
+from zanzipy.schema.rules import (
+    ComputedUsersetRule,
+    ExclusionRule,
+    IntersectionRule,
+    TupleToUsersetRule,
+    UnionRule,
+)
+from zanzipy.schema.subjects import SubjectReference
+from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from zanzipy.storage.revision import ReadContext
+
+
+class RecordingInMemoryRelationRepository(InMemoryRelationRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.forward_filters: list[TupleFilter] = []
+        self.reverse_filters: list[TupleFilter] = []
+
+    def read(
+        self,
+        filter: TupleFilter,
+        *,
+        context: ReadContext,
+    ) -> Iterable[RelationTuple]:
+        self.forward_filters.append(filter)
+        return super().read(filter, context=context)
+
+    def read_reverse(
+        self,
+        filter: TupleFilter,
+        *,
+        context: ReadContext,
+    ) -> Iterable[RelationTuple]:
+        self.reverse_filters.append(filter)
+        return super().read(filter, context=context)
+
+
+def _user_ref() -> SubjectReference:
+    return SubjectReference.from_dict({"namespace": "user"})
+
+
+def _group_member_ref() -> SubjectReference:
+    return SubjectReference.from_dict({"namespace": "group", "relation": "member"})
+
+
+def test_direct_relation_lookup_uses_reverse_reads_only() -> None:
+    registry = SchemaRegistry()
+    registry.register(
+        NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects("owner", (_user_ref(),)),
+                RelationDef.with_subjects("editor", (_user_ref(),)),
+            ),
+            permissions=(PermissionDef("can_view", ComputedUsersetRule("owner")),),
+        )
+    )
+    repo = RecordingInMemoryRelationRepository()
+    client = ZanzibarClient(relations_repository=repo, schema=registry)
+    client.write_many(
+        [
+            ("document:owned", "owner", "user:alice"),
+            ("document:edited", "editor", "user:alice"),
+            ("document:bob", "owner", "user:bob"),
+        ]
+    )
+    repo.forward_filters.clear()
+    repo.reverse_filters.clear()
+
+    assert client.list_objects("document", "can_view", "user:alice") == [
+        "document:owned"
+    ]
+    assert repo.forward_filters == []
+    assert (
+        TupleFilter(
+            object_type="document",
+            relation="owner",
+            subject_type="user",
+            subject_id="alice",
+            subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
+        )
+        in repo.reverse_filters
+    )
+    assert not any(
+        filter.object_type == "document" and filter.relation is None
+        for filter in repo.reverse_filters
+    )
+
+
+def test_lookup_walks_group_usersets_backwards() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        [
+            NamespaceDef(
+                name="group",
+                relations=(
+                    RelationDef.with_subjects(
+                        "member",
+                        (_user_ref(), _group_member_ref()),
+                    ),
+                ),
+            ),
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (_user_ref(), _group_member_ref()),
+                    ),
+                ),
+                permissions=(PermissionDef("can_view", ComputedUsersetRule("viewer")),),
+            ),
+        ]
+    )
+    client = ZanzibarClient(
+        relations_repository=InMemoryRelationRepository(),
+        schema=registry,
+    )
+    client.write_many(
+        [
+            ("group:platform", "member", "user:alice"),
+            ("group:eng", "member", "group:platform#member"),
+            ("document:handbook", "viewer", "group:eng#member"),
+            ("document:private", "viewer", "group:hr#member"),
+        ]
+    )
+
+    assert client.list_objects("document", "can_view", "user:alice") == [
+        "document:handbook"
+    ]
+
+
+def test_lookup_walks_nested_tuple_to_userset_edges_backwards() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        [
+            NamespaceDef(
+                name="folder",
+                relations=(
+                    RelationDef.with_subjects("viewer", (_user_ref(),)),
+                    RelationDef.with_subjects(
+                        "parent",
+                        (SubjectReference.from_dict({"namespace": "folder"}),),
+                    ),
+                ),
+                permissions=(
+                    PermissionDef(
+                        "can_view",
+                        UnionRule(
+                            (
+                                ComputedUsersetRule("viewer"),
+                                TupleToUsersetRule("parent", "can_view"),
+                            )
+                        ),
+                    ),
+                ),
+            ),
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "parent",
+                        (SubjectReference.from_dict({"namespace": "folder"}),),
+                    ),
+                ),
+                permissions=(
+                    PermissionDef("can_view", TupleToUsersetRule("parent", "can_view")),
+                ),
+            ),
+        ]
+    )
+    client = ZanzibarClient(
+        relations_repository=InMemoryRelationRepository(),
+        schema=registry,
+    )
+    client.write_many(
+        [
+            ("folder:root", "viewer", "user:alice"),
+            ("folder:child", "parent", "folder:root"),
+            ("folder:grandchild", "parent", "folder:child"),
+            ("document:root-doc", "parent", "folder:root"),
+            ("document:child-doc", "parent", "folder:child"),
+            ("document:grandchild-doc", "parent", "folder:grandchild"),
+            ("document:other-doc", "parent", "folder:other"),
+        ]
+    )
+
+    assert client.list_objects("document", "can_view", "user:alice") == [
+        "document:child-doc",
+        "document:grandchild-doc",
+        "document:root-doc",
+    ]
+
+
+def test_union_intersection_and_exclusion_lookup_are_correct() -> None:
+    registry = SchemaRegistry()
+    registry.register(
+        NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects("owner", (_user_ref(),)),
+                RelationDef.with_subjects("editor", (_user_ref(),)),
+                RelationDef.with_subjects("banned", (_user_ref(),)),
+            ),
+            permissions=(
+                PermissionDef(
+                    "can_view",
+                    UnionRule(
+                        (ComputedUsersetRule("owner"), ComputedUsersetRule("editor"))
+                    ),
+                ),
+                PermissionDef(
+                    "can_comment",
+                    IntersectionRule(
+                        (ComputedUsersetRule("owner"), ComputedUsersetRule("editor"))
+                    ),
+                ),
+                PermissionDef(
+                    "can_download",
+                    ExclusionRule(
+                        UnionRule(
+                            (
+                                ComputedUsersetRule("owner"),
+                                ComputedUsersetRule("editor"),
+                            )
+                        ),
+                        ComputedUsersetRule("banned"),
+                    ),
+                ),
+            ),
+        )
+    )
+    client = ZanzibarClient(
+        relations_repository=InMemoryRelationRepository(),
+        schema=registry,
+    )
+    client.write_many(
+        [
+            ("document:owned", "owner", "user:alice"),
+            ("document:edited", "editor", "user:alice"),
+            ("document:both", "owner", "user:alice"),
+            ("document:both", "editor", "user:alice"),
+            ("document:edited", "banned", "user:alice"),
+            ("document:bob", "owner", "user:bob"),
+        ]
+    )
+
+    assert client.list_objects("document", "owner", "user:alice") == [
+        "document:both",
+        "document:owned",
+    ]
+    assert client.list_objects("document", "can_view", "user:alice") == [
+        "document:both",
+        "document:edited",
+        "document:owned",
+    ]
+    assert client.list_objects("document", "can_comment", "user:alice") == [
+        "document:both"
+    ]
+    assert client.list_objects("document", "can_download", "user:alice") == [
+        "document:both",
+        "document:owned",
+    ]
+
+
+def test_tuple_to_userset_lookup_uses_parent_reverse_reads() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        [
+            NamespaceDef(
+                name="folder",
+                relations=(RelationDef.with_subjects("viewer", (_user_ref(),)),),
+            ),
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "parent",
+                        (SubjectReference.from_dict({"namespace": "folder"}),),
+                    ),
+                ),
+                permissions=(
+                    PermissionDef("can_view", TupleToUsersetRule("parent", "viewer")),
+                ),
+            ),
+        ]
+    )
+    repo = RecordingInMemoryRelationRepository()
+    client = ZanzibarClient(relations_repository=repo, schema=registry)
+    client.write_many(
+        [
+            ("folder:shared", "viewer", "user:alice"),
+            ("document:doc", "parent", "folder:shared"),
+            ("document:other", "parent", "folder:private"),
+        ]
+    )
+    repo.forward_filters.clear()
+    repo.reverse_filters.clear()
+
+    assert client.list_objects("document", "can_view", "user:alice") == ["document:doc"]
+    assert repo.forward_filters == []
+    assert (
+        TupleFilter(
+            object_type="document",
+            relation="parent",
+            subject_type="folder",
+            subject_id="shared",
+            subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
+        )
+        in repo.reverse_filters
+    )

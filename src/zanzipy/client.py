@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 from .engine.checker import CheckEngine
 from .engine.expander import ExpansionEngine, SubjectSet
+from .engine.lookup import LookupEngine
 from .models import (
     CheckRequest,
     CheckResponse,
@@ -87,6 +88,11 @@ class ZanzibarClient:
                 max_depth=max_check_depth,
                 enable_debug=enable_debug,
             )
+        )
+        self._lookup_engine = LookupEngine(
+            relations_repository=relations_repository,
+            schema=schema,
+            max_depth=max_check_depth,
         )
         self._expansion_engine = ExpansionEngine(
             relations_repository=relations_repository,
@@ -358,21 +364,14 @@ class ZanzibarClient:
         *,
         context: ReadContext,
     ) -> list[str]:
-        Subject.from_string(subject).require_direct()
-        candidates: set[str] = set()
-        for t in self.relations_repository.read(
-            TupleFilter(object_type=object_type),
+        subject_ref = Subject.from_string(subject).require_direct()
+        resources = self._lookup_engine.lookup_resources(
+            resource_type=object_type,
+            permission=relation,
+            subject=subject_ref,
             context=context,
-        ):
-            candidates.add(str(t.object.id))
-
-        results: list[str] = []
-        for object_id in sorted(candidates):
-            obj_str = f"{object_type}:{object_id}"
-            request = CheckRequest.from_strings(obj_str, relation, subject)
-            if self._check_engine.check(request, context=context).allowed:
-                results.append(obj_str)
-        return results
+        )
+        return [str(resource) for resource in resources]
 
     def _list_subjects_direct_in_context(
         self,
