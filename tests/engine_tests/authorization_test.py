@@ -5,7 +5,13 @@ from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
 from zanzipy.schema.registry import SchemaRegistry
 from zanzipy.schema.relations import RelationDef
-from zanzipy.schema.rules import ComputedUsersetRule, TupleToUsersetRule, UnionRule
+from zanzipy.schema.rules import (
+    ComputedUsersetRule,
+    ExclusionRule,
+    ThisRule,
+    TupleToUsersetRule,
+    UnionRule,
+)
 from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.cache.concrete.lru import LruTupleCache
 from zanzipy.storage.cache.concrete.lru_rules import LruCompiledRuleCache
@@ -172,6 +178,177 @@ def test_lookup_resources_response_includes_debug_and_counters() -> None:
     )
     assert response.depth_reached == 0
     assert response.tuples_examined == 1
+
+
+def test_lookup_resources_response_counts_with_debug_disabled() -> None:
+    registry = _registry()
+    repo = _repo_with_owner()
+    engine = AuthorizationEngine(
+        relations_repository=repo,
+        schema=registry,
+        enable_debug=False,
+    )
+    context = _context(repo)
+
+    response = engine.lookup_resources(
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="owner",
+            subject=Subject.from_string("user:alice"),
+        ),
+        context=context,
+    )
+
+    assert [str(resource) for resource in response.resources] == ["document:doc1"]
+    assert response.debug_trace is None
+    assert response.depth_reached == 0
+    assert response.tuples_examined == 1
+
+
+def test_lookup_resources_merges_nested_semantic_check_diagnostics() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        [
+            NamespaceDef(
+                name="group",
+                relations=(
+                    RelationDef.with_subjects(
+                        "member",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                        rewrite=ExclusionRule(
+                            ThisRule(),
+                            ComputedUsersetRule("banned"),
+                        ),
+                    ),
+                    RelationDef.with_subjects(
+                        "banned",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                    ),
+                ),
+            ),
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (
+                            SubjectReference.from_dict(
+                                {"namespace": "group", "relation": "member"}
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ]
+    )
+    repo = InMemoryRelationRepository()
+    repo.write(
+        WriteContext(DEFAULT_TENANT),
+        (
+            TupleMutation.touch(
+                RelationTuple.from_string("group:eng#member@user:alice")
+            ),
+            TupleMutation.touch(
+                RelationTuple.from_string("document:spec#viewer@group:eng#member")
+            ),
+        ),
+    )
+    engine = AuthorizationEngine(
+        relations_repository=repo,
+        schema=registry,
+        enable_debug=True,
+    )
+    context = _context(repo)
+
+    response = engine.lookup_resources(
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="viewer",
+            subject=Subject.from_string("user:alice"),
+        ),
+        context=context,
+    )
+
+    assert [str(resource) for resource in response.resources] == ["document:spec"]
+    assert response.debug_trace is not None
+    assert response.depth_reached == 3
+    assert response.tuples_examined == 5
+    assert any(
+        "semantic check group:eng#member contains user:alice:" in line
+        for line in response.debug_trace
+    )
+    assert any(
+        "-> check group:eng#member@user:alice" in line for line in response.debug_trace
+    )
+    assert any(
+        "canonical check document:spec#viewer@user:alice:" in line
+        for line in response.debug_trace
+    )
+
+
+def test_lookup_resources_skips_semantic_checks_after_depth_cutoff() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        [
+            NamespaceDef(
+                name="group",
+                relations=(
+                    RelationDef.with_subjects(
+                        "member",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                        rewrite=UnionRule((ThisRule(),)),
+                    ),
+                ),
+            ),
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (
+                            SubjectReference.from_dict(
+                                {"namespace": "group", "relation": "member"}
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ]
+    )
+    repo = InMemoryRelationRepository()
+    repo.write(
+        WriteContext(DEFAULT_TENANT),
+        (
+            TupleMutation.touch(
+                RelationTuple.from_string("group:eng#member@user:alice")
+            ),
+            TupleMutation.touch(
+                RelationTuple.from_string("document:spec#viewer@group:eng#member")
+            ),
+        ),
+    )
+    engine = AuthorizationEngine(
+        relations_repository=repo,
+        schema=registry,
+        max_depth=0,
+        enable_debug=True,
+    )
+    context = _context(repo)
+
+    response = engine.lookup_resources(
+        LookupResourcesRequest(
+            resource_type="document",
+            permission="viewer",
+            subject=Subject.from_string("user:alice"),
+        ),
+        context=context,
+    )
+
+    assert response.resources == ()
+    assert response.tuples_examined == 1
+    assert response.debug_trace is not None
+    assert any("Max depth reached: 1" in line for line in response.debug_trace)
+    assert not any("semantic check" in line for line in response.debug_trace)
 
 
 def test_authorization_engine_owns_tuple_cache_decorator() -> None:
