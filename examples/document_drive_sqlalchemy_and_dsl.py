@@ -1,13 +1,20 @@
 """
-Document Drive (SQLAlchemy edition)
----------------------------------
+Document Drive (SQLAlchemy + DSL edition)
+-----------------------------------------
 
-Same scenario as `document_drive.py`, but using SQLAlchemy-backed repositories and
-proper domain models with stable IDs (UUIDs). This demonstrates how to wire
-zanzipy into an app that already uses SQLAlchemy for persistence, while using
-the same SQLAlchemy engine for the authorization storage tables.
+Same scenario as `document_drive.py`, but using SQLAlchemy-backed repositories,
+proper domain models with stable IDs (UUIDs), and the fluent schema DSL
+(`NamespaceBuilder`/`SchemaBuilder`). It demonstrates how to wire zanzipy into
+an app that already uses SQLAlchemy for persistence while sharing the same
+SQLAlchemy engine for authorization storage tables.
+
+Requires SQLAlchemy outside a checkout:
+    pip install "zanzipy[sqlalchemy]"
+
+Run:
+    uv run python examples/document_drive_sqlalchemy_and_dsl.py
+
 """
-
 from uuid import uuid4
 
 from sqlalchemy import Column, ForeignKey, String, Table, create_engine, insert
@@ -210,7 +217,7 @@ def chk(obj: str, rel: str, user: User) -> bool:
     return client.check(obj, rel, f"user:{user.id}")
 
 
-print("=== Document Drive (SQLAlchemy) ===")
+print("=== Document Drive (SQLAlchemy + DSL) ===")
 print("Folder viewing:")
 with Session(engine) as db:
     us = {u.name: u for u in db.query(User).all()}

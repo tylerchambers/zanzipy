@@ -3,16 +3,21 @@
 Zanzibar‑style authorization for Python, with a tiny DSL to declare your schema and a simple client to write and check permissions. Friendly, lightweight, and practical.
 
 ### Install 📦
+
+Requires Python 3.14+.
+
 ```bash
 pip install zanzipy
+# Optional integrations used by the SQLAlchemy/Flask examples:
+pip install "zanzipy[sqlalchemy]"
+pip install "zanzipy[flask,sqlalchemy]"
 ```
 
 ### Quick start 🚀
 ```python
 from zanzipy.dsl.builder import SchemaBuilder
 from zanzipy.client import ZanzibarClient
-from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
-from zanzipy.storage.revision import TenantId
+from zanzipy.storage.repos import InMemoryRelationRepository, TenantId
 
 # Define schema with the fluent DSL
 registry = (
@@ -56,8 +61,7 @@ from zanzipy.client import ZanzibarClient
 from zanzipy.dsl.builder import SchemaBuilder
 from zanzipy.engine_integration import ZanzibarEngine, configure_authorization
 from zanzipy.integration.mixins import AuthorizableResource, AuthorizableSubject
-from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
-from zanzipy.storage.revision import TenantId
+from zanzipy.storage.repos import InMemoryRelationRepository, TenantId
 
 # Define a minimal schema (user + document)
 registry = (
@@ -104,6 +108,18 @@ assert readme.check(alice, "can_view")  # True via the computed permission
 ```
 
 For a fuller mixins setup with groups, SQLAlchemy models, and caching, see `examples/document_drive_sqlalchemy_and_mixins.py`.
+
+### Examples
+
+The repository examples cover the same document-drive authorization model at increasing integration levels:
+
+- `examples/document_drive.py` — zero-dependency in-memory repository and explicit schema objects.
+- `examples/document_drive_sqlalchemy.py` — SQLAlchemy-backed relation storage with explicit schema objects (`zanzipy[sqlalchemy]`).
+- `examples/document_drive_sqlalchemy_and_dsl.py` — the same SQLAlchemy setup using `NamespaceBuilder`/`SchemaBuilder`.
+- `examples/document_drive_sqlalchemy_and_mixins.py` — domain model helpers via `AuthorizableResource`, `AuthorizableSubject`, and `ZanzibarEngine`.
+- `examples/document_drive_flask_sqlalchemy.py` — Flask extension, request-scoped engine binding, mixins, and SQLAlchemy (`zanzipy[flask,sqlalchemy]`).
+
+From a checkout, run the non-server examples with `uv run python <path>`. The Flask example starts a local server and prints IDs for curl requests.
 
 ### Key features 🧰
 - ✨ DSL‑first schema authoring (`SchemaBuilder`, `NamespaceBuilder`).

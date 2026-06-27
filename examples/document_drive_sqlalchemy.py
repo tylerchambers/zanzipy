@@ -6,6 +6,12 @@ Same scenario as `document_drive.py`, but using SQLAlchemy-backed repositories a
 proper domain models with stable IDs (UUIDs). This demonstrates how to wire
 zanzipy into an app that already uses SQLAlchemy for persistence, while using
 the same SQLAlchemy engine for the authorization storage tables.
+
+Requires SQLAlchemy outside a checkout:
+    pip install "zanzipy[sqlalchemy]"
+
+Run:
+    uv run python examples/document_drive_sqlalchemy.py
 """
 
 from uuid import uuid4
