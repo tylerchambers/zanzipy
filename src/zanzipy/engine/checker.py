@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from zanzipy.engine._rewrite_dispatch import dispatch_rewrite_rule
 from zanzipy.models import (
     CheckRequest,
     CheckResponse,
@@ -9,19 +10,19 @@ from zanzipy.models import (
     Obj,
     TupleFilter,
 )
-from zanzipy.schema.rules import (
-    ComputedUsersetRule,
-    DirectRule,
-    ExclusionRule,
-    IntersectionRule,
-    RewriteRule,
-    ThisRule,
-    TupleToUsersetRule,
-    UnionRule,
-)
 
 if TYPE_CHECKING:
     from zanzipy.schema.compiled import CompiledAuthorizationModel
+    from zanzipy.schema.rules import (
+        ComputedUsersetRule,
+        DirectRule,
+        ExclusionRule,
+        IntersectionRule,
+        RewriteRule,
+        ThisRule,
+        TupleToUsersetRule,
+        UnionRule,
+    )
     from zanzipy.storage.repos.abstract.relations import RelationRepository
     from zanzipy.storage.revision import ReadContext
 
@@ -168,105 +169,160 @@ class CheckEngine:
         counters: _Counters,
         current_relation: str,
     ) -> bool:
-        """Dispatch evaluation based on rewrite node type."""
+        """Evaluate one rewrite rule against the current object."""
 
-        if isinstance(rewrite, DirectRule):
-            return self._check_direct(
-                object_type=object_type,
-                object_id=object_id,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                context=context,
-                depth=depth,
-                visited=visited,
-                debug_trace=debug_trace,
-                counters=counters,
-                effective_relation=current_relation,
-            )
+        return dispatch_rewrite_rule(
+            rewrite,
+            direct=self._evaluate_direct_rule,
+            this=self._evaluate_this_rule,
+            computed_userset=self._evaluate_computed_userset_rule,
+            tuple_to_userset=self._evaluate_tuple_to_userset_rule,
+            union=self._evaluate_union_rule,
+            intersection=self._evaluate_intersection_rule,
+            exclusion=self._evaluate_exclusion_rule,
+            object_type=object_type,
+            object_id=object_id,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            context=context,
+            depth=depth,
+            visited=visited,
+            debug_trace=debug_trace,
+            counters=counters,
+            current_relation=current_relation,
+        )
 
-        if isinstance(rewrite, ThisRule):
-            return self._check_direct(
-                object_type=object_type,
-                object_id=object_id,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                context=context,
-                depth=depth,
-                visited=visited,
-                debug_trace=debug_trace,
-                counters=counters,
-                effective_relation=current_relation,
-            )
+    def _evaluate_direct_rule(
+        self,
+        _rewrite: DirectRule,
+        *,
+        object_type: str,
+        object_id: str,
+        subject_type: str,
+        subject_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str, str, str]],
+        debug_trace: list[str] | None,
+        counters: _Counters,
+        current_relation: str,
+    ) -> bool:
+        return self._check_direct(
+            object_type=object_type,
+            object_id=object_id,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            context=context,
+            depth=depth,
+            visited=visited,
+            debug_trace=debug_trace,
+            counters=counters,
+            effective_relation=current_relation,
+        )
 
-        if isinstance(rewrite, ComputedUsersetRule):
-            return self._check_recursive(
-                object_type=object_type,
-                object_id=object_id,
-                relation=rewrite.relation,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                context=context,
-                depth=depth + 1,
-                visited=visited,
-                debug_trace=debug_trace,
-                counters=counters,
-            )
+    def _evaluate_this_rule(
+        self,
+        _rewrite: ThisRule,
+        *,
+        object_type: str,
+        object_id: str,
+        subject_type: str,
+        subject_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str, str, str]],
+        debug_trace: list[str] | None,
+        counters: _Counters,
+        current_relation: str,
+    ) -> bool:
+        return self._check_direct(
+            object_type=object_type,
+            object_id=object_id,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            context=context,
+            depth=depth,
+            visited=visited,
+            debug_trace=debug_trace,
+            counters=counters,
+            effective_relation=current_relation,
+        )
 
-        if isinstance(rewrite, TupleToUsersetRule):
-            return self._check_tuple_to_userset(
-                object_type=object_type,
-                object_id=object_id,
-                tuple_relation=rewrite.tuple_relation,
-                computed_relation=rewrite.computed_relation,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                context=context,
-                depth=depth,
-                visited=visited,
-                debug_trace=debug_trace,
-                counters=counters,
-            )
+    def _evaluate_computed_userset_rule(
+        self,
+        rewrite: ComputedUsersetRule,
+        *,
+        object_type: str,
+        object_id: str,
+        subject_type: str,
+        subject_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str, str, str]],
+        debug_trace: list[str] | None,
+        counters: _Counters,
+        current_relation: str,
+    ) -> bool:
+        return self._check_recursive(
+            object_type=object_type,
+            object_id=object_id,
+            relation=rewrite.relation,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+            debug_trace=debug_trace,
+            counters=counters,
+        )
 
-        if isinstance(rewrite, UnionRule):
-            for child in rewrite.children:
-                if self._evaluate_rule(
-                    rewrite=child,
-                    object_type=object_type,
-                    object_id=object_id,
-                    subject_type=subject_type,
-                    subject_id=subject_id,
-                    context=context,
-                    depth=depth + 1,
-                    visited=visited,
-                    debug_trace=debug_trace,
-                    counters=counters,
-                    current_relation=current_relation,
-                ):
-                    return True
-            return False
+    def _evaluate_tuple_to_userset_rule(
+        self,
+        rewrite: TupleToUsersetRule,
+        *,
+        object_type: str,
+        object_id: str,
+        subject_type: str,
+        subject_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str, str, str]],
+        debug_trace: list[str] | None,
+        counters: _Counters,
+        current_relation: str,
+    ) -> bool:
+        return self._check_tuple_to_userset(
+            object_type=object_type,
+            object_id=object_id,
+            tuple_relation=rewrite.tuple_relation,
+            computed_relation=rewrite.computed_relation,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            context=context,
+            depth=depth,
+            visited=visited,
+            debug_trace=debug_trace,
+            counters=counters,
+        )
 
-        if isinstance(rewrite, IntersectionRule):
-            for child in rewrite.children:
-                ok = self._evaluate_rule(
-                    rewrite=child,
-                    object_type=object_type,
-                    object_id=object_id,
-                    subject_type=subject_type,
-                    subject_id=subject_id,
-                    context=context,
-                    depth=depth + 1,
-                    visited=visited,
-                    debug_trace=debug_trace,
-                    counters=counters,
-                    current_relation=current_relation,
-                )
-                if not ok:
-                    return False
-            return True
-
-        if isinstance(rewrite, ExclusionRule):
-            base_ok = self._evaluate_rule(
-                rewrite=rewrite.base,
+    def _evaluate_union_rule(
+        self,
+        rewrite: UnionRule,
+        *,
+        object_type: str,
+        object_id: str,
+        subject_type: str,
+        subject_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str, str, str]],
+        debug_trace: list[str] | None,
+        counters: _Counters,
+        current_relation: str,
+    ) -> bool:
+        for child in rewrite.children:
+            if self._evaluate_rule(
+                rewrite=child,
                 object_type=object_type,
                 object_id=object_id,
                 subject_type=subject_type,
@@ -277,26 +333,87 @@ class CheckEngine:
                 debug_trace=debug_trace,
                 counters=counters,
                 current_relation=current_relation,
-            )
-            if not base_ok:
-                return False
-            subtract_ok = self._evaluate_rule(
-                rewrite=rewrite.subtract,
-                object_type=object_type,
-                object_id=object_id,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                context=context,
-                depth=depth + 1,
-                visited=visited,
-                debug_trace=debug_trace,
-                counters=counters,
-                current_relation=current_relation,
-            )
-            return not subtract_ok
-
-        # Unknown node type at runtime
+            ):
+                return True
         return False
+
+    def _evaluate_intersection_rule(
+        self,
+        rewrite: IntersectionRule,
+        *,
+        object_type: str,
+        object_id: str,
+        subject_type: str,
+        subject_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str, str, str]],
+        debug_trace: list[str] | None,
+        counters: _Counters,
+        current_relation: str,
+    ) -> bool:
+        for child in rewrite.children:
+            ok = self._evaluate_rule(
+                rewrite=child,
+                object_type=object_type,
+                object_id=object_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                context=context,
+                depth=depth + 1,
+                visited=visited,
+                debug_trace=debug_trace,
+                counters=counters,
+                current_relation=current_relation,
+            )
+            if not ok:
+                return False
+        return True
+
+    def _evaluate_exclusion_rule(
+        self,
+        rewrite: ExclusionRule,
+        *,
+        object_type: str,
+        object_id: str,
+        subject_type: str,
+        subject_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str, str, str]],
+        debug_trace: list[str] | None,
+        counters: _Counters,
+        current_relation: str,
+    ) -> bool:
+        base_ok = self._evaluate_rule(
+            rewrite=rewrite.base,
+            object_type=object_type,
+            object_id=object_id,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+            debug_trace=debug_trace,
+            counters=counters,
+            current_relation=current_relation,
+        )
+        if not base_ok:
+            return False
+        subtract_ok = self._evaluate_rule(
+            rewrite=rewrite.subtract,
+            object_type=object_type,
+            object_id=object_id,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+            debug_trace=debug_trace,
+            counters=counters,
+            current_relation=current_relation,
+        )
+        return not subtract_ok
 
     def _check_direct(
         self,

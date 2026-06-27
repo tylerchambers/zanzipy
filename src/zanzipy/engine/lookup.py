@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+from zanzipy.engine._rewrite_dispatch import dispatch_rewrite_rule
 from zanzipy.engine.checker import CheckEngine
 from zanzipy.models import (
     CheckRequest,
@@ -177,41 +178,102 @@ class LookupEngine:
         *,
         resource_type: str,
     ) -> tuple[tuple[str, str], ...]:
-        if isinstance(rewrite, ComputedUsersetRule):
-            return ((resource_type, rewrite.relation),)
+        return dispatch_rewrite_rule(
+            rewrite,
+            direct=self._rewrite_relation_refs_direct,
+            this=self._rewrite_relation_refs_this,
+            computed_userset=self._rewrite_relation_refs_computed_userset,
+            tuple_to_userset=self._rewrite_relation_refs_tuple_to_userset,
+            union=self._rewrite_relation_refs_union,
+            intersection=self._rewrite_relation_refs_intersection,
+            exclusion=self._rewrite_relation_refs_exclusion,
+            resource_type=resource_type,
+        )
 
-        if isinstance(rewrite, TupleToUsersetRule):
-            return tuple(
-                (target_type, rewrite.computed_relation)
-                for target_type in self._model.tuple_to_userset_target_types(
-                    resource_type=resource_type,
-                    tuple_relation=rewrite.tuple_relation,
-                )
-            )
-
-        if isinstance(rewrite, (UnionRule, IntersectionRule)):
-            return tuple(
-                child_ref
-                for child in rewrite.children
-                for child_ref in self._rewrite_relation_refs(
-                    child,
-                    resource_type=resource_type,
-                )
-            )
-
-        if isinstance(rewrite, ExclusionRule):
-            return (
-                *self._rewrite_relation_refs(
-                    rewrite.base,
-                    resource_type=resource_type,
-                ),
-                *self._rewrite_relation_refs(
-                    rewrite.subtract,
-                    resource_type=resource_type,
-                ),
-            )
-
+    def _rewrite_relation_refs_direct(
+        self,
+        _rewrite: DirectRule,
+        *,
+        resource_type: str,
+    ) -> tuple[tuple[str, str], ...]:
         return ()
+
+    def _rewrite_relation_refs_this(
+        self,
+        _rewrite: ThisRule,
+        *,
+        resource_type: str,
+    ) -> tuple[tuple[str, str], ...]:
+        return ()
+
+    def _rewrite_relation_refs_computed_userset(
+        self,
+        rewrite: ComputedUsersetRule,
+        *,
+        resource_type: str,
+    ) -> tuple[tuple[str, str], ...]:
+        return ((resource_type, rewrite.relation),)
+
+    def _rewrite_relation_refs_tuple_to_userset(
+        self,
+        rewrite: TupleToUsersetRule,
+        *,
+        resource_type: str,
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (target_type, rewrite.computed_relation)
+            for target_type in self._model.tuple_to_userset_target_types(
+                resource_type=resource_type,
+                tuple_relation=rewrite.tuple_relation,
+            )
+        )
+
+    def _rewrite_relation_refs_union(
+        self,
+        rewrite: UnionRule,
+        *,
+        resource_type: str,
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            child_ref
+            for child in rewrite.children
+            for child_ref in self._rewrite_relation_refs(
+                child,
+                resource_type=resource_type,
+            )
+        )
+
+    def _rewrite_relation_refs_intersection(
+        self,
+        rewrite: IntersectionRule,
+        *,
+        resource_type: str,
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            child_ref
+            for child in rewrite.children
+            for child_ref in self._rewrite_relation_refs(
+                child,
+                resource_type=resource_type,
+            )
+        )
+
+    def _rewrite_relation_refs_exclusion(
+        self,
+        rewrite: ExclusionRule,
+        *,
+        resource_type: str,
+    ) -> tuple[tuple[str, str], ...]:
+        return (
+            *self._rewrite_relation_refs(
+                rewrite.base,
+                resource_type=resource_type,
+            ),
+            *self._rewrite_relation_refs(
+                rewrite.subtract,
+                resource_type=resource_type,
+            ),
+        )
 
     def _lookup_relation(
         self,
@@ -291,55 +353,116 @@ class LookupEngine:
         current_relation: str,
         visited: set[tuple[str, str, str]],
     ) -> set[Obj]:
-        if isinstance(rewrite, (DirectRule, ThisRule)):
-            return self._lookup_direct(
-                resource_type=resource_type,
-                relation=current_relation,
-                subject=subject,
-                context=context,
-                depth=depth,
-            )
+        return dispatch_rewrite_rule(
+            rewrite,
+            direct=self._evaluate_direct_rule,
+            this=self._evaluate_this_rule,
+            computed_userset=self._evaluate_computed_userset_rule,
+            tuple_to_userset=self._evaluate_tuple_to_userset_rule,
+            union=self._evaluate_union_rule,
+            intersection=self._evaluate_intersection_rule,
+            exclusion=self._evaluate_exclusion_rule,
+            resource_type=resource_type,
+            subject=subject,
+            context=context,
+            depth=depth,
+            current_relation=current_relation,
+            visited=visited,
+        )
 
-        if isinstance(rewrite, ComputedUsersetRule):
-            return self._lookup_recursive(
-                resource_type=resource_type,
-                relation=rewrite.relation,
-                subject=subject,
-                context=context,
-                depth=depth + 1,
-                visited=visited,
-            )
+    def _evaluate_direct_rule(
+        self,
+        _rewrite: DirectRule,
+        *,
+        resource_type: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+        current_relation: str,
+        visited: set[tuple[str, str, str]],
+    ) -> set[Obj]:
+        return self._lookup_direct(
+            resource_type=resource_type,
+            relation=current_relation,
+            subject=subject,
+            context=context,
+            depth=depth,
+        )
 
-        if isinstance(rewrite, TupleToUsersetRule):
-            return self._lookup_tuple_to_userset(
-                resource_type=resource_type,
-                tuple_relation=rewrite.tuple_relation,
-                computed_relation=rewrite.computed_relation,
-                subject=subject,
-                context=context,
-                depth=depth,
-            )
+    def _evaluate_this_rule(
+        self,
+        _rewrite: ThisRule,
+        *,
+        resource_type: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+        current_relation: str,
+        visited: set[tuple[str, str, str]],
+    ) -> set[Obj]:
+        return self._lookup_direct(
+            resource_type=resource_type,
+            relation=current_relation,
+            subject=subject,
+            context=context,
+            depth=depth,
+        )
 
-        if isinstance(rewrite, UnionRule):
-            result: set[Obj] = set()
-            for child in rewrite.children:
-                result.update(
-                    self._evaluate_rule(
-                        rewrite=child,
-                        resource_type=resource_type,
-                        subject=subject,
-                        context=context,
-                        depth=depth + 1,
-                        current_relation=current_relation,
-                        visited=visited,
-                    )
-                )
-            return result
+    def _evaluate_computed_userset_rule(
+        self,
+        rewrite: ComputedUsersetRule,
+        *,
+        resource_type: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+        current_relation: str,
+        visited: set[tuple[str, str, str]],
+    ) -> set[Obj]:
+        return self._lookup_recursive(
+            resource_type=resource_type,
+            relation=rewrite.relation,
+            subject=subject,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+        )
 
-        if isinstance(rewrite, IntersectionRule):
-            result: set[Obj] | None = None
-            for child in rewrite.children:
-                child_result = self._evaluate_rule(
+    def _evaluate_tuple_to_userset_rule(
+        self,
+        rewrite: TupleToUsersetRule,
+        *,
+        resource_type: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+        current_relation: str,
+        visited: set[tuple[str, str, str]],
+    ) -> set[Obj]:
+        return self._lookup_tuple_to_userset(
+            resource_type=resource_type,
+            tuple_relation=rewrite.tuple_relation,
+            computed_relation=rewrite.computed_relation,
+            subject=subject,
+            context=context,
+            depth=depth,
+        )
+
+    def _evaluate_union_rule(
+        self,
+        rewrite: UnionRule,
+        *,
+        resource_type: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+        current_relation: str,
+        visited: set[tuple[str, str, str]],
+    ) -> set[Obj]:
+        result: set[Obj] = set()
+        for child in rewrite.children:
+            result.update(
+                self._evaluate_rule(
                     rewrite=child,
                     resource_type=resource_type,
                     subject=subject,
@@ -348,14 +471,24 @@ class LookupEngine:
                     current_relation=current_relation,
                     visited=visited,
                 )
-                result = child_result if result is None else result & child_result
-                if not result:
-                    return set()
-            return result or set()
+            )
+        return result
 
-        if isinstance(rewrite, ExclusionRule):
-            base = self._evaluate_rule(
-                rewrite=rewrite.base,
+    def _evaluate_intersection_rule(
+        self,
+        rewrite: IntersectionRule,
+        *,
+        resource_type: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+        current_relation: str,
+        visited: set[tuple[str, str, str]],
+    ) -> set[Obj]:
+        result: set[Obj] | None = None
+        for child in rewrite.children:
+            child_result = self._evaluate_rule(
+                rewrite=child,
                 resource_type=resource_type,
                 subject=subject,
                 context=context,
@@ -363,20 +496,43 @@ class LookupEngine:
                 current_relation=current_relation,
                 visited=visited,
             )
-            if not base:
+            result = child_result if result is None else result & child_result
+            if not result:
                 return set()
-            subtract = self._evaluate_rule(
-                rewrite=rewrite.subtract,
-                resource_type=resource_type,
-                subject=subject,
-                context=context,
-                depth=depth + 1,
-                current_relation=current_relation,
-                visited=visited,
-            )
-            return base - subtract
+        return result or set()
 
-        return set()
+    def _evaluate_exclusion_rule(
+        self,
+        rewrite: ExclusionRule,
+        *,
+        resource_type: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+        current_relation: str,
+        visited: set[tuple[str, str, str]],
+    ) -> set[Obj]:
+        base = self._evaluate_rule(
+            rewrite=rewrite.base,
+            resource_type=resource_type,
+            subject=subject,
+            context=context,
+            depth=depth + 1,
+            current_relation=current_relation,
+            visited=visited,
+        )
+        if not base:
+            return set()
+        subtract = self._evaluate_rule(
+            rewrite=rewrite.subtract,
+            resource_type=resource_type,
+            subject=subject,
+            context=context,
+            depth=depth + 1,
+            current_relation=current_relation,
+            visited=visited,
+        )
+        return base - subtract
 
     def _lookup_direct(
         self,
@@ -636,41 +792,111 @@ class LookupEngine:
         resource_type: str,
         cost: int,
     ) -> dict[tuple[tuple[str, str], str | None], int]:
-        if isinstance(rewrite, ComputedUsersetRule):
-            return {((resource_type, rewrite.relation), None): cost + 1}
+        return dispatch_rewrite_rule(
+            rewrite,
+            direct=self._rewrite_dependencies_direct,
+            this=self._rewrite_dependencies_this,
+            computed_userset=self._rewrite_dependencies_computed_userset,
+            tuple_to_userset=self._rewrite_dependencies_tuple_to_userset,
+            union=self._rewrite_dependencies_union,
+            intersection=self._rewrite_dependencies_intersection,
+            exclusion=self._rewrite_dependencies_exclusion,
+            resource_type=resource_type,
+            cost=cost,
+        )
 
-        if isinstance(rewrite, TupleToUsersetRule):
-            return {
-                ((target_type, rewrite.computed_relation), rewrite.tuple_relation): (
-                    cost + 1
-                )
-                for target_type in self._model.tuple_to_userset_target_types(
-                    resource_type=resource_type,
-                    tuple_relation=rewrite.tuple_relation,
-                )
-            }
-
-        if isinstance(rewrite, (UnionRule, IntersectionRule)):
-            dependencies: dict[tuple[tuple[str, str], str | None], int] = {}
-            for child in rewrite.children:
-                self._merge_dependency_costs(
-                    dependencies,
-                    self._rewrite_dependencies(
-                        child,
-                        resource_type=resource_type,
-                        cost=cost + 1,
-                    ),
-                )
-            return dependencies
-
-        if isinstance(rewrite, ExclusionRule):
-            return self._rewrite_dependencies(
-                rewrite.base,
-                resource_type=resource_type,
-                cost=cost + 1,
-            )
-
+    def _rewrite_dependencies_direct(
+        self,
+        _rewrite: DirectRule,
+        *,
+        resource_type: str,
+        cost: int,
+    ) -> dict[tuple[tuple[str, str], str | None], int]:
         return {}
+
+    def _rewrite_dependencies_this(
+        self,
+        _rewrite: ThisRule,
+        *,
+        resource_type: str,
+        cost: int,
+    ) -> dict[tuple[tuple[str, str], str | None], int]:
+        return {}
+
+    def _rewrite_dependencies_computed_userset(
+        self,
+        rewrite: ComputedUsersetRule,
+        *,
+        resource_type: str,
+        cost: int,
+    ) -> dict[tuple[tuple[str, str], str | None], int]:
+        return {((resource_type, rewrite.relation), None): cost + 1}
+
+    def _rewrite_dependencies_tuple_to_userset(
+        self,
+        rewrite: TupleToUsersetRule,
+        *,
+        resource_type: str,
+        cost: int,
+    ) -> dict[tuple[tuple[str, str], str | None], int]:
+        return {
+            ((target_type, rewrite.computed_relation), rewrite.tuple_relation): cost + 1
+            for target_type in self._model.tuple_to_userset_target_types(
+                resource_type=resource_type,
+                tuple_relation=rewrite.tuple_relation,
+            )
+        }
+
+    def _rewrite_dependencies_union(
+        self,
+        rewrite: UnionRule,
+        *,
+        resource_type: str,
+        cost: int,
+    ) -> dict[tuple[tuple[str, str], str | None], int]:
+        dependencies: dict[tuple[tuple[str, str], str | None], int] = {}
+        for child in rewrite.children:
+            self._merge_dependency_costs(
+                dependencies,
+                self._rewrite_dependencies(
+                    child,
+                    resource_type=resource_type,
+                    cost=cost + 1,
+                ),
+            )
+        return dependencies
+
+    def _rewrite_dependencies_intersection(
+        self,
+        rewrite: IntersectionRule,
+        *,
+        resource_type: str,
+        cost: int,
+    ) -> dict[tuple[tuple[str, str], str | None], int]:
+        dependencies: dict[tuple[tuple[str, str], str | None], int] = {}
+        for child in rewrite.children:
+            self._merge_dependency_costs(
+                dependencies,
+                self._rewrite_dependencies(
+                    child,
+                    resource_type=resource_type,
+                    cost=cost + 1,
+                ),
+            )
+        return dependencies
+
+    def _rewrite_dependencies_exclusion(
+        self,
+        rewrite: ExclusionRule,
+        *,
+        resource_type: str,
+        cost: int,
+    ) -> dict[tuple[tuple[str, str], str | None], int]:
+        return self._rewrite_dependencies(
+            rewrite.base,
+            resource_type=resource_type,
+            cost=cost + 1,
+        )
 
     @staticmethod
     def _merge_dependency_costs(
