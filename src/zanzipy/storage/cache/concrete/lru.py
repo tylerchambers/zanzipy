@@ -1,4 +1,4 @@
-"""In-memory LRU cache for relation tuple buckets."""
+"""In-memory LRU cache for revisioned relation tuple buckets."""
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -10,12 +10,14 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from zanzipy.models import Obj, RelationTuple, Subject
+    from zanzipy.storage.revision import Revision
 
 
 @dataclass(frozen=True, slots=True)
 class _ObjectKey:
     namespace: str
     id: str
+    revision: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,17 +25,14 @@ class _SubjectKey:
     namespace: str
     id: str
     relation: str | None
+    revision: int
 
 
 type _TupleCacheKey = _ObjectKey | _SubjectKey
 
 
 class LruTupleCache(TupleCache):
-    """Thread-safe size-bounded LRU/TTL cache for relation tuple buckets.
-
-    ``max_entries`` is global across object and subject buckets. Cached values
-    are stored and returned as immutable tuples to avoid aliasing cached state.
-    """
+    """Thread-safe size-bounded LRU/TTL cache for revisioned tuple buckets."""
 
     def __init__(
         self, *, max_entries: int = 10000, ttl_seconds: float | None = 30.0
@@ -43,23 +42,39 @@ class LruTupleCache(TupleCache):
             ttl_seconds=ttl_seconds,
         )
 
-    def get_by_object(self, obj: Obj) -> Sequence[RelationTuple] | None:
-        return self._store.get(_object_key(obj))
+    def get_by_object(
+        self,
+        obj: Obj,
+        *,
+        revision: Revision,
+    ) -> Sequence[RelationTuple] | None:
+        return self._store.get(_object_key(obj, revision=revision))
 
-    def set_by_object(self, obj: Obj, tuples: Sequence[RelationTuple]) -> None:
-        self._store.set(_object_key(obj), tuple(tuples))
+    def set_by_object(
+        self,
+        obj: Obj,
+        *,
+        revision: Revision,
+        tuples: Sequence[RelationTuple],
+    ) -> None:
+        self._store.set(_object_key(obj, revision=revision), tuple(tuples))
 
-    def invalidate_object(self, obj: Obj) -> None:
-        self._store.delete(_object_key(obj))
+    def get_by_subject(
+        self,
+        subject: Subject,
+        *,
+        revision: Revision,
+    ) -> Sequence[RelationTuple] | None:
+        return self._store.get(_subject_key(subject, revision=revision))
 
-    def get_by_subject(self, subject: Subject) -> Sequence[RelationTuple] | None:
-        return self._store.get(_subject_key(subject))
-
-    def set_by_subject(self, subject: Subject, tuples: Sequence[RelationTuple]) -> None:
-        self._store.set(_subject_key(subject), tuple(tuples))
-
-    def invalidate_subject(self, subject: Subject) -> None:
-        self._store.delete(_subject_key(subject))
+    def set_by_subject(
+        self,
+        subject: Subject,
+        *,
+        revision: Revision,
+        tuples: Sequence[RelationTuple],
+    ) -> None:
+        self._store.set(_subject_key(subject, revision=revision), tuple(tuples))
 
     def ping(self) -> bool:
         return True
@@ -78,13 +93,18 @@ class LruTupleCache(TupleCache):
         return info
 
 
-def _object_key(obj: Obj) -> _ObjectKey:
-    return _ObjectKey(namespace=str(obj.namespace), id=str(obj.id))
+def _object_key(obj: Obj, *, revision: Revision) -> _ObjectKey:
+    return _ObjectKey(
+        namespace=str(obj.namespace),
+        id=str(obj.id),
+        revision=revision.value,
+    )
 
 
-def _subject_key(subject: Subject) -> _SubjectKey:
+def _subject_key(subject: Subject, *, revision: Revision) -> _SubjectKey:
     return _SubjectKey(
         namespace=str(subject.namespace),
         id=str(subject.id),
         relation=None if subject.relation is None else str(subject.relation),
+        revision=revision.value,
     )

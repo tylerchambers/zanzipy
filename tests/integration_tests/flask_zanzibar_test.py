@@ -16,6 +16,7 @@ from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
+from zanzipy.storage.revision import TupleMutation
 
 
 def _make_registry() -> SchemaRegistry:
@@ -120,7 +121,13 @@ class TestFlaskZanzibarExtension:
         with app.app_context():
             ext = app.extensions["zanzibar"]
             repo = ext.client.relations_repository  # type: ignore[assignment]
-            repo.write(RelationTuple.from_string("document:doc1#owner@user:alice"))
+            repo.write(
+                (
+                    TupleMutation.touch(
+                        RelationTuple.from_string("document:doc1#owner@user:alice")
+                    ),
+                )
+            )
 
         res = client.get("/mixins/doc1/alice")
         assert res.status_code == 200

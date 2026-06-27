@@ -1,9 +1,4 @@
-"""Redis-backed cache for relation tuples with injectable codec and client.
-
-This avoids hard runtime deps by accepting any redis-like client with `get`,
-`set`, `delete`, and optional `ping`. A pluggable codec controls key format and
-serialization for easy customization and testing.
-"""
+"""Redis-backed cache for revisioned relation tuple buckets."""
 
 from dataclasses import dataclass
 import json
@@ -16,11 +11,12 @@ if TYPE_CHECKING:
 
     from zanzipy.models import Obj, RelationTuple, Subject
     from zanzipy.storage.common import RedisLike
+    from zanzipy.storage.revision import Revision
 
 
 class RedisTupleCodec(Protocol):
-    def key_for_object(self, obj: Obj) -> str: ...
-    def key_for_subject(self, subject: Subject) -> str: ...
+    def key_for_object(self, obj: Obj, *, revision: Revision) -> str: ...
+    def key_for_subject(self, subject: Subject, *, revision: Revision) -> str: ...
     def encode(self, tuples: Sequence[RelationTuple]) -> bytes | str: ...
     def decode(self, data: bytes | str) -> list[RelationTuple]: ...
 
@@ -29,15 +25,17 @@ class RedisTupleCodec(Protocol):
 class DefaultRedisTupleCodec:
     prefix: str = "z:rt"
 
-    def key_for_object(self, obj: Obj) -> str:
-        return f"{self.prefix}:obj:{obj.namespace}:{obj.id}"
+    def key_for_object(self, obj: Obj, *, revision: Revision) -> str:
+        return f"{self.prefix}:obj:{obj.namespace}:{obj.id}:rev:{revision.value}"
 
-    def key_for_subject(self, subject: Subject) -> str:
+    def key_for_subject(self, subject: Subject, *, revision: Revision) -> str:
         rel = "-" if subject.relation is None else str(subject.relation)
-        return f"{self.prefix}:subj:{subject.namespace}:{subject.id}:{rel}"
+        return (
+            f"{self.prefix}:subj:{subject.namespace}:{subject.id}:"
+            f"{rel}:rev:{revision.value}"
+        )
 
     def encode(self, tuples: Sequence[RelationTuple]) -> str:
-        # Store as JSON array of canonical tuple strings
         return json.dumps([str(t) for t in tuples])
 
     def decode(self, data: bytes | str) -> list[RelationTuple]:
@@ -60,43 +58,59 @@ class RedisTupleCache(TupleCache):
         self._ttl = ttl_seconds
         self._codec = codec if codec is not None else DefaultRedisTupleCodec()
 
-    def get_by_object(self, obj: Obj) -> Sequence[RelationTuple] | None:
-        raw = self._client.get(self._codec.key_for_object(obj))
+    def get_by_object(
+        self,
+        obj: Obj,
+        *,
+        revision: Revision,
+    ) -> Sequence[RelationTuple] | None:
+        token = self._codec.key_for_object(obj, revision=revision)
+        raw = self._client.get(token)
         if raw is None:
             return None
         try:
             return self._codec.decode(raw)
         except Exception:
-            self._client.delete(self._codec.key_for_object(obj))
+            self._client.delete(token)
             return None
 
-    def set_by_object(self, obj: Obj, tuples: Sequence[RelationTuple]) -> None:
+    def set_by_object(
+        self,
+        obj: Obj,
+        *,
+        revision: Revision,
+        tuples: Sequence[RelationTuple],
+    ) -> None:
         ex = None if self._ttl is None else int(self._ttl)
-        self._client.set(
-            self._codec.key_for_object(obj), self._codec.encode(tuples), ex=ex
-        )
+        token = self._codec.key_for_object(obj, revision=revision)
+        self._client.set(token, self._codec.encode(tuples), ex=ex)
 
-    def invalidate_object(self, obj: Obj) -> None:
-        self._client.delete(self._codec.key_for_object(obj))
-
-    def get_by_subject(self, subject: Subject) -> Sequence[RelationTuple] | None:
-        raw = self._client.get(self._codec.key_for_subject(subject))
+    def get_by_subject(
+        self,
+        subject: Subject,
+        *,
+        revision: Revision,
+    ) -> Sequence[RelationTuple] | None:
+        token = self._codec.key_for_subject(subject, revision=revision)
+        raw = self._client.get(token)
         if raw is None:
             return None
         try:
             return self._codec.decode(raw)
         except Exception:
-            self._client.delete(self._codec.key_for_subject(subject))
+            self._client.delete(token)
             return None
 
-    def set_by_subject(self, subject: Subject, tuples: Sequence[RelationTuple]) -> None:
+    def set_by_subject(
+        self,
+        subject: Subject,
+        *,
+        revision: Revision,
+        tuples: Sequence[RelationTuple],
+    ) -> None:
         ex = None if self._ttl is None else int(self._ttl)
-        self._client.set(
-            self._codec.key_for_subject(subject), self._codec.encode(tuples), ex=ex
-        )
-
-    def invalidate_subject(self, subject: Subject) -> None:
-        self._client.delete(self._codec.key_for_subject(subject))
+        key = self._codec.key_for_subject(subject, revision=revision)
+        self._client.set(key, self._codec.encode(tuples), ex=ex)
 
     def ping(self) -> bool:
         return bool(self._client.ping())

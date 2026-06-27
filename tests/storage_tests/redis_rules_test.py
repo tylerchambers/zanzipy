@@ -17,8 +17,8 @@ class _FakeRedis:
     def __init__(self) -> None:
         self._data: dict[str, bytes] = {}
 
-    def get(self, key: str) -> bytes | None:
-        return self._data.get(key)
+    def get(self, token: str) -> bytes | None:
+        return self._data.get(token)
 
     def set(self, key: str, value: bytes | str, ex: int | None = None) -> bool:
         stored = value if isinstance(value, bytes) else str(value).encode()
@@ -43,6 +43,9 @@ class _FakeRedis:
 
     def close(self) -> None:
         self._data.clear()
+
+    def get_for_test(self, token: str) -> bytes | None:
+        return self._data.get(token)
 
 
 class _Codec(DefaultRedisCompiledRuleCodec):
@@ -77,7 +80,7 @@ def test_redis_compiled_rule_cache_invalid_data() -> None:
 
     cache = RedisCompiledRuleCache(client=client, ttl_seconds=None, codec=codec)
     assert cache.get("ns", "bad") is None
-    assert client.get(bad_key) is None
+    assert client.get_for_test(bad_key) is None
 
 
 def test_redis_compiled_rule_cache_invalidates_namespace() -> None:

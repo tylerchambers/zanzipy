@@ -2,6 +2,7 @@ import pytest
 
 from zanzipy.models.tuple import RelationTuple
 from zanzipy.storage.cache.concrete.lru import LruTupleCache
+from zanzipy.storage.revision import Revision
 
 
 def _rt(
@@ -19,47 +20,56 @@ def _rt(
 
 
 class TestLruTupleCache:
-    def test_get_set_invalidate_by_object(self) -> None:
+    def test_get_set_by_object_is_revision_scoped(self) -> None:
         cache = LruTupleCache(max_entries=10, ttl_seconds=None)
         t1 = _rt("doc", "1", "viewer", "user", "alice")
         obj = t1.object
 
-        assert cache.get_by_object(obj) is None
+        assert cache.get_by_object(obj, revision=Revision(1)) is None
         assert cache.info()["misses"] == 1
 
-        cache.set_by_object(obj, [t1])
-        got = cache.get_by_object(obj)
+        cache.set_by_object(obj, revision=Revision(1), tuples=[t1])
+        got = cache.get_by_object(obj, revision=Revision(1))
         assert got == (t1,)
 
         with pytest.raises(AttributeError):
             got.append(_rt("doc", "1", "viewer", "user", "bob"))  # type: ignore[attr-defined]
 
-        assert cache.get_by_object(obj) == (t1,)
+        assert cache.get_by_object(obj, revision=Revision(2)) is None
+        assert cache.get_by_object(obj, revision=Revision(1)) == (t1,)
 
-        cache.invalidate_object(obj)
-        assert cache.get_by_object(obj) is None
-
-    def test_get_set_invalidate_by_subject_variants(self) -> None:
+    def test_get_set_by_subject_is_revision_scoped(self) -> None:
         cache = LruTupleCache(max_entries=10, ttl_seconds=None)
         t_direct = _rt("doc", "1", "editor", "user", "alice")
         t_anchor = _rt("doc", "1", "editor", "group", "eng", "member")
 
-        cache.set_by_subject(t_direct.subject, [t_direct])
-        assert cache.get_by_subject(t_direct.subject) == (t_direct,)
+        cache.set_by_subject(
+            t_direct.subject,
+            revision=Revision(1),
+            tuples=[t_direct],
+        )
+        assert cache.get_by_subject(
+            t_direct.subject,
+            revision=Revision(1),
+        ) == (t_direct,)
+        assert cache.get_by_subject(t_direct.subject, revision=Revision(2)) is None
 
-        cache.set_by_subject(t_anchor.subject, [t_anchor])
-        assert cache.get_by_subject(t_anchor.subject) == (t_anchor,)
-
-        cache.invalidate_subject(t_direct.subject)
-        assert cache.get_by_subject(t_direct.subject) is None
-        assert cache.get_by_subject(t_anchor.subject) == (t_anchor,)
+        cache.set_by_subject(
+            t_anchor.subject,
+            revision=Revision(1),
+            tuples=[t_anchor],
+        )
+        assert cache.get_by_subject(
+            t_anchor.subject,
+            revision=Revision(1),
+        ) == (t_anchor,)
 
     def test_ttl_expiry_zero_expires_immediately(self) -> None:
         cache = LruTupleCache(max_entries=10, ttl_seconds=0)
         t1 = _rt("doc", "1", "viewer", "user", "alice")
-        cache.set_by_object(t1.object, [t1])
+        cache.set_by_object(t1.object, revision=Revision(1), tuples=[t1])
 
-        assert cache.get_by_object(t1.object) is None
+        assert cache.get_by_object(t1.object, revision=Revision(1)) is None
 
     def test_ttl_expiry_with_time_advance(self, monkeypatch) -> None:
         import zanzipy.storage.cache.concrete._lru as lru_module
@@ -73,30 +83,34 @@ class TestLruTupleCache:
         cache = LruTupleCache(max_entries=10, ttl_seconds=5)
         t1 = _rt("doc", "1", "viewer", "user", "alice")
 
-        cache.set_by_object(t1.object, [t1])
-        assert cache.get_by_object(t1.object) == (t1,)
+        cache.set_by_object(t1.object, revision=Revision(1), tuples=[t1])
+        assert cache.get_by_object(t1.object, revision=Revision(1)) == (t1,)
 
         now = 1006.0
-        assert cache.get_by_object(t1.object) is None
+        assert cache.get_by_object(t1.object, revision=Revision(1)) is None
 
-    def test_lru_eviction_is_global_across_object_and_subject_entries(self) -> None:
+    def test_lru_eviction_is_global_across_revisioned_entries(self) -> None:
         cache = LruTupleCache(max_entries=3, ttl_seconds=None)
         t_a = _rt("doc", "A", "viewer", "user", "a")
         t_b = _rt("doc", "B", "viewer", "user", "b")
         t_subject = _rt("doc", "S", "viewer", "user", "s")
         t_c = _rt("doc", "C", "viewer", "user", "c")
 
-        cache.set_by_object(t_a.object, [t_a])
-        cache.set_by_subject(t_subject.subject, [t_subject])
-        cache.set_by_object(t_b.object, [t_b])
+        cache.set_by_object(t_a.object, revision=Revision(1), tuples=[t_a])
+        cache.set_by_subject(
+            t_subject.subject,
+            revision=Revision(1),
+            tuples=[t_subject],
+        )
+        cache.set_by_object(t_b.object, revision=Revision(1), tuples=[t_b])
 
-        assert cache.get_by_object(t_a.object) == (t_a,)
-        cache.set_by_object(t_c.object, [t_c])
+        assert cache.get_by_object(t_a.object, revision=Revision(1)) == (t_a,)
+        cache.set_by_object(t_c.object, revision=Revision(1), tuples=[t_c])
 
-        assert cache.get_by_subject(t_subject.subject) is None
-        assert cache.get_by_object(t_a.object) == (t_a,)
-        assert cache.get_by_object(t_b.object) == (t_b,)
-        assert cache.get_by_object(t_c.object) == (t_c,)
+        assert cache.get_by_subject(t_subject.subject, revision=Revision(1)) is None
+        assert cache.get_by_object(t_a.object, revision=Revision(1)) == (t_a,)
+        assert cache.get_by_object(t_b.object, revision=Revision(1)) == (t_b,)
+        assert cache.get_by_object(t_c.object, revision=Revision(1)) == (t_c,)
 
         info = cache.info()
         assert info["size"] == 3
@@ -107,9 +121,9 @@ class TestLruTupleCache:
         cache = LruTupleCache(max_entries=5, ttl_seconds=None)
         t1 = _rt("doc", "1", "viewer", "user", "alice")
 
-        assert cache.get_by_object(t1.object) is None
-        cache.set_by_object(t1.object, [t1])
-        assert cache.get_by_object(t1.object) == (t1,)
+        assert cache.get_by_object(t1.object, revision=Revision(1)) is None
+        cache.set_by_object(t1.object, revision=Revision(1), tuples=[t1])
+        assert cache.get_by_object(t1.object, revision=Revision(1)) == (t1,)
 
         info = cache.info()
         assert isinstance(info["hits"], int)

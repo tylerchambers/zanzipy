@@ -14,6 +14,7 @@ from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
+from zanzipy.storage.revision import TupleMutation
 
 
 def _registry() -> SchemaRegistry:
@@ -146,7 +147,9 @@ class TestAuthorizableResourceDecorator:
         alice = User("alice")
 
         # Seed tuple directly
-        repo.write(RelationTuple.from_string("doc:1#owner@user:alice"))
+        repo.write(
+            (TupleMutation.touch(RelationTuple.from_string("doc:1#owner@user:alice")),)
+        )
 
         perms = d.get_permissions(alice)  # type: ignore[attr-defined]
         assert "view" in perms

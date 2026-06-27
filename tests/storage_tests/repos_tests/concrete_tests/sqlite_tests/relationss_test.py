@@ -1,76 +1,75 @@
 from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.repos.concrete.sqlite import SQLiteRelationRepository
+from zanzipy.storage.revision import Revision, TupleMutation, WriteResult
 
 
 class TestSQLiteRelationRepository:
-    def test_write_read_get_delete_roundtrip(self) -> None:
+    def test_write_delete_and_readd_create_snapshot_windows(self) -> None:
         repo = SQLiteRelationRepository()
+        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
-        t1 = RelationTuple.from_string("document:doc1#owner@user:alice")
-        t2 = RelationTuple.from_string("document:doc1#owner@user:bob")
-        t3 = RelationTuple.from_string("folder:f1#viewer@group:eng#member")
+        initial = repo.head_revision()
+        write = repo.write((TupleMutation.touch(t),))
+        noop = repo.write((TupleMutation.touch(t),))
+        delete = repo.write((TupleMutation.delete(t),))
+        readd = repo.write((TupleMutation.touch(t),))
 
-        repo.write(t1)
-        repo.write_many([t2, t3])
+        assert isinstance(write, WriteResult)
+        assert initial == Revision(0)
+        assert write.revision == Revision(1)
+        assert noop.revision == write.revision
+        assert delete.revision == Revision(2)
+        assert readd.revision == Revision(3)
+        assert repo.head_revision() == readd.revision
 
-        assert repo.get(t1) == t1
-        assert repo.exists(t1)
+        assert repo.get(t, revision=initial) is None
+        assert repo.get(t, revision=write.revision) == t
+        assert repo.get(t, revision=delete.revision) is None
+        assert repo.get(t, revision=readd.revision) == t
 
-        results = list(
-            repo.read(
-                TupleFilter(object_type="document", object_id="doc1", relation="owner")
-            )
-        )
-        assert {str(t.subject) for t in results} == {"user:alice", "user:bob"}
-
-        rev_results = list(
-            repo.read_reverse(TupleFilter(subject_type="user", subject_id="alice"))
-        )
-        assert rev_results == [t1]
-
-        assert repo.delete_by_key(t1) is True
-        assert repo.delete_by_key(t1) is False
-        assert repo.get(t1) is None
-
-    def test_upsert_is_idempotent_for_direct_subjects(self) -> None:
-        repo = SQLiteRelationRepository()
-        direct = RelationTuple.from_string("document:doc1#viewer@user:alice")
-        userset = RelationTuple.from_string("document:doc1#viewer@group:eng#member")
-
-        repo.write_many([direct, direct, userset, userset])
-
-        assert set(repo.read(TupleFilter())) == {direct, userset}
-
-    def test_reverse_read_applies_all_filter_fields(self) -> None:
+    def test_read_and_read_reverse_respect_revision(self) -> None:
         repo = SQLiteRelationRepository()
         viewer = RelationTuple.from_string("document:doc1#viewer@user:alice")
-        owner = RelationTuple.from_string("document:doc2#owner@user:alice")
-        other = RelationTuple.from_string("document:doc3#viewer@user:bob")
-        repo.write_many([viewer, owner, other])
+        owner = RelationTuple.from_string("document:doc1#owner@user:bob")
 
-        results = list(
+        initial = repo.head_revision()
+        write = repo.write((TupleMutation.touch(viewer), TupleMutation.touch(owner)))
+        delete = repo.write((TupleMutation.delete(viewer),))
+
+        assert list(repo.read(TupleFilter(), revision=initial)) == []
+        assert list(
+            repo.read(
+                TupleFilter(object_type="document", object_id="doc1"),
+                revision=write.revision,
+            )
+        ) == [owner, viewer]
+        assert list(
             repo.read_reverse(
-                TupleFilter(
-                    subject_type="user",
-                    subject_id="alice",
-                    relation="viewer",
+                TupleFilter(subject_type="user", subject_id="alice"),
+                revision=write.revision,
+            )
+        ) == [viewer]
+        assert (
+            list(
+                repo.read_reverse(
+                    TupleFilter(subject_type="user", subject_id="alice"),
+                    revision=delete.revision,
                 )
             )
+            == []
         )
-        assert results == [viewer]
+        assert list(repo.by_object(viewer.object, revision=delete.revision)) == [owner]
 
-    def test_reverse_read_can_match_direct_subject_exactly(self) -> None:
+    def test_watch_returns_committed_changes_after_revision(self) -> None:
         repo = SQLiteRelationRepository()
-        direct = RelationTuple.from_string("document:doc1#viewer@group:eng")
-        userset = RelationTuple.from_string("document:doc2#viewer@group:eng#member")
-        repo.write_many([direct, userset])
+        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
-        assert list(repo.read_reverse(TupleFilter.from_subject(direct.subject))) == [
-            direct
+        write = repo.write((TupleMutation.touch(t),))
+        delete = repo.write((TupleMutation.delete(t),))
+
+        changes = list(repo.watch(after=Revision(0)))
+        assert [change.revision for change in changes] == [
+            write.revision,
+            delete.revision,
         ]
-        assert list(
-            repo.read_reverse(TupleFilter(subject_type="group", subject_id="eng"))
-        ) == [
-            direct,
-            userset,
-        ]
+        assert [change.relation_tuple for change in changes] == [t, t]

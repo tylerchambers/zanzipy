@@ -236,18 +236,18 @@ with Session(engine) as db:
     _ = client.expand("document:spec", "can_view")  # warm
     _ = client.expand("document:spec", "can_view")  # likely hit
 
-# Demonstrate invalidation: perform a write/delete on the same object/subject
-# and re-read to show cache misses increase.
+# Demonstrate revision-scoped cache keys: write/delete create new revisions,
+# so old cached buckets remain valid and newer reads use distinct entries.
 with Session(engine) as db:
     us = {u.name: u for u in db.query(User).all()}
     before = tuple_cache.info().copy()
 
-    # Write a new relation on the same object to invalidate by-object cache
+    # Write a new relation; subsequent reads use a new revision cache key
     client.write("document:spec", "viewer", f"user:{us['Eve'].id}")
     _ = chk("document:spec", "can_view", us["Bob"])  # triggers re-fill
     after_write = tuple_cache.info().copy()
 
-    # Delete that relation, invalidating again
+    # Delete that relation; subsequent reads use another revision cache key
     client.delete("document:spec", "viewer", f"user:{us['Eve'].id}")
     _ = chk("document:spec", "can_view", us["Bob"])  # triggers re-fill
     after_delete = tuple_cache.info().copy()
@@ -279,7 +279,7 @@ print(
     stats.get("size_subjects"),
 )
 
-print("\nAfter invalidation demo:")
+print("\nAfter revision-scoped cache demo:")
 print("before:", before)
 print("after_write:", after_write)
 print("after_delete:", after_delete)

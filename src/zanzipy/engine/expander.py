@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from zanzipy.engine.resolver import RuleResolver
-from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject
+from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject, TupleFilter
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from zanzipy.schema.registry import SchemaRegistry
     from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
     from zanzipy.storage.repos.abstract.relations import RelationRepository
+    from zanzipy.storage.revision import Revision
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +78,14 @@ class ExpansionEngine:
             compiled_rules_cache=compiled_rules_cache,
         )
 
-    def expand(self, object_type: str, object_id: str, relation: str) -> SubjectSet:
+    def expand(
+        self,
+        object_type: str,
+        object_id: str,
+        relation: str,
+        *,
+        revision: Revision | None = None,
+    ) -> SubjectSet:
         """Expand subjects that grant relation/permission on the object.
 
         Validates inputs using existing value objects and schema definitions.
@@ -88,11 +96,13 @@ class ExpansionEngine:
         EntityId(object_id)
         Relation(relation)
 
+        revision = self._relations.head_revision() if revision is None else revision
         visited: set[tuple[str, str, str]] = set()
         return self._expand_recursive(
             object_type=object_type,
             object_id=object_id,
             relation=relation,
+            revision=revision,
             depth=0,
             visited=visited,
         )
@@ -103,6 +113,7 @@ class ExpansionEngine:
         object_type: str,
         object_id: str,
         relation: str,
+        revision: Revision,
         depth: int,
         visited: set[tuple[str, str, str]],
     ) -> SubjectSet:
@@ -118,6 +129,7 @@ class ExpansionEngine:
                 rewrite=rewrite,
                 object_type=object_type,
                 object_id=object_id,
+                revision=revision,
                 depth=depth,
                 visited=visited,
                 current_relation=relation,
@@ -131,6 +143,7 @@ class ExpansionEngine:
         rewrite: RewriteRule,
         object_type: str,
         object_id: str,
+        revision: Revision,
         depth: int,
         visited: set[tuple[str, str, str]],
         current_relation: str,
@@ -140,6 +153,7 @@ class ExpansionEngine:
             return self._expand_direct(
                 object_type=object_type,
                 object_id=object_id,
+                revision=revision,
                 effective_relation=current_relation,
             )
 
@@ -148,6 +162,7 @@ class ExpansionEngine:
                 object_type=object_type,
                 object_id=object_id,
                 relation=rewrite.relation,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
             )
@@ -158,6 +173,7 @@ class ExpansionEngine:
                 object_id=object_id,
                 tuple_relation=rewrite.tuple_relation,
                 computed_relation=rewrite.computed_relation,
+                revision=revision,
                 depth=depth,
                 visited=visited,
             )
@@ -169,6 +185,7 @@ class ExpansionEngine:
                     rewrite=child,
                     object_type=object_type,
                     object_id=object_id,
+                    revision=revision,
                     depth=depth + 1,
                     visited=visited,
                     current_relation=current_relation,
@@ -183,12 +200,14 @@ class ExpansionEngine:
                     rewrite=child,
                     object_type=object_type,
                     object_id=object_id,
+                    revision=revision,
                     depth=depth + 1,
                     visited=visited,
                     current_relation=current_relation,
                 )
                 child_subjects = self._materialize(
                     child_set,
+                    revision=revision,
                     depth=depth + 1,
                     visited=visited,
                 )
@@ -204,6 +223,7 @@ class ExpansionEngine:
                 rewrite=rewrite.base,
                 object_type=object_type,
                 object_id=object_id,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
                 current_relation=current_relation,
@@ -212,17 +232,20 @@ class ExpansionEngine:
                 rewrite=rewrite.subtract,
                 object_type=object_type,
                 object_id=object_id,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
                 current_relation=current_relation,
             )
             base_subjects = self._materialize(
                 base,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
             )
             subtract_subjects = self._materialize(
                 subtract,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
             )
@@ -235,6 +258,7 @@ class ExpansionEngine:
         self,
         subject_set: SubjectSet,
         *,
+        revision: Revision,
         depth: int,
         visited: set[tuple[str, str, str]],
     ) -> set[str]:
@@ -250,12 +274,14 @@ class ExpansionEngine:
                 object_type=str(subject.namespace),
                 object_id=str(subject.id),
                 relation=str(subject.relation),
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
             )
             subjects.update(
                 self._materialize(
                     expanded,
+                    revision=revision,
                     depth=depth + 1,
                     visited=visited,
                 )
@@ -280,13 +306,14 @@ class ExpansionEngine:
         *,
         object_type: str,
         object_id: str,
+        revision: Revision,
         effective_relation: str,
     ) -> SubjectSet:
         """Collect direct tuples for the effective relation on one object."""
         obj = Obj.from_parts(object_type, object_id)
         users: set[str] = set()
         usersets: set[str] = set()
-        for t in self._relations.by_object(obj):
+        for t in self._relations.read(TupleFilter.from_object(obj), revision=revision):
             if str(t.relation) != effective_relation:
                 continue
             # Subject set anchor
@@ -309,13 +336,14 @@ class ExpansionEngine:
         object_id: str,
         tuple_relation: str,
         computed_relation: str,
+        revision: Revision,
         depth: int,
         visited: set[tuple[str, str, str]],
     ) -> SubjectSet:
         """Follow tuple-to-userset edges and union the target expansions."""
         obj = Obj.from_parts(object_type, object_id)
         result = SubjectSet()
-        for t in self._relations.by_object(obj):
+        for t in self._relations.read(TupleFilter.from_object(obj), revision=revision):
             if str(t.relation) != tuple_relation:
                 continue
             # Only follow object references (no subject-set here)
@@ -327,6 +355,7 @@ class ExpansionEngine:
                 object_type=next_object_type,
                 object_id=next_object_id,
                 relation=computed_relation,
+                revision=revision,
                 depth=depth + 1,
                 visited=visited,
             )

@@ -39,17 +39,17 @@ class LruStore[TKey, TValue]:
         self._hits = 0
         self._misses = 0
 
-    def get(self, key: TKey) -> TValue | None:
+    def get(self, token: TKey) -> TValue | None:
         with self._lock:
-            entry = self._entries.get(key)
+            entry = self._entries.get(token)
             if entry is None:
                 self._misses += 1
                 return None
             if self._is_expired(entry):
-                self._entries.pop(key, None)
+                self._entries.pop(token, None)
                 self._misses += 1
                 return None
-            self._entries.move_to_end(key, last=True)
+            self._entries.move_to_end(token, last=True)
             self._hits += 1
             return entry.value
 
