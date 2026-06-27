@@ -115,6 +115,7 @@ class TestLookupResourcesParityOracle:
                 subject,
                 revision=revision,
             )
+        assert lookup == sorted(lookup)
         actual = set(lookup)
         assert len(lookup) == len(actual)
         assert actual == expected

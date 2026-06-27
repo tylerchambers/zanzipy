@@ -126,6 +126,7 @@ From a checkout, run the non-server examples with `uv run python <path>`. The Fl
 - 🔗 Zanzibar semantics: relations, permissions, union/intersection/exclusion, tuple‑to‑userset.
 - ✅ Correctness‑first evaluation: cycle detection, max‑depth limits, and subject expansion.
 - 🔎 Reverse lookup: `list_objects` walks subject-bucket edges, so nested usersets and caches work without candidate-object scans.
+- Engine-level LookupResources exposes typed request/response models with optional debug traces and traversal counters; the high-level `list_objects` client API still returns `list[str]`.
 - 🧩 Simple client API: `write`, `delete`, `check`, `list_objects`, `expand`.
 - Tenant-scoped revisioned storage: writes return `WriteResult` with a tenant-scoped `RevisionToken`; snapshot reads prefer the token and reject mismatched tenant tokens.
 - Storage-agnostic: implement tenant-scoped `RelationRepository`; start with in-memory. SQLite uses `BEGIN IMMEDIATE` to serialize revision allocation; SQLAlchemy retries transient tenant-revision insert/serialization conflicts and surfaces the database error if retries are exhausted.

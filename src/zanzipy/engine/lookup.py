@@ -1,12 +1,15 @@
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from zanzipy.engine.checker import CheckEngine
 from zanzipy.models import (
     CheckRequest,
+    CheckResponse,
     EntityId,
+    LookupResourcesRequest,
+    LookupResourcesResponse,
     NamespaceId,
     Obj,
-    Relation,
     Subject,
     TupleFilter,
 )
@@ -27,6 +30,52 @@ if TYPE_CHECKING:
     from zanzipy.storage.revision import ReadContext
 
 
+@dataclass(slots=True)
+class _LookupDiagnostics:
+    """Mutable request-scoped metrics and optional LookupResources trace."""
+
+    debug_trace: list[str] | None
+    tuples_examined: int = 0
+    max_depth_reached: int = 0
+
+    def reached(self, depth: int) -> None:
+        """Record that lookup reached ``depth``."""
+
+        self.max_depth_reached = max(self.max_depth_reached, depth)
+
+    def tuple_examined(self) -> None:
+        """Count one tuple yielded to the lookup traversal."""
+
+        self.tuples_examined += 1
+
+    def trace(self, depth: int, message: str) -> None:
+        """Append an indented debug trace line when debug mode is enabled."""
+
+        if self.debug_trace is not None:
+            self.debug_trace.append(f"{'  ' * depth}{message}")
+
+    def merge_check_response(
+        self,
+        response: CheckResponse,
+        *,
+        depth: int,
+        label: str | None,
+    ) -> None:
+        """Merge diagnostics from a canonical check invoked by lookup."""
+
+        self.tuples_examined += response.tuples_examined
+        self.max_depth_reached = max(
+            self.max_depth_reached,
+            depth + response.depth_reached,
+        )
+        if self.debug_trace is None or response.debug_trace is None or label is None:
+            return
+
+        self.trace(depth, f"{label}:")
+        for line in response.debug_trace:
+            self.debug_trace.append(f"{'  ' * (depth + 1)}{line}")
+
+
 class LookupEngine:
     """Evaluates reverse LookupResources traversals from a subject to objects."""
 
@@ -36,49 +85,69 @@ class LookupEngine:
         relations_repository: RelationRepository,
         authorization_model: CompiledAuthorizationModel,
         max_depth: int = 25,
+        enable_debug: bool = False,
     ) -> None:
         """Create a reverse lookup engine over a repository and compiled model."""
         self._relations = relations_repository
         self._max_depth = max_depth
+        self._enable_debug = enable_debug
         self._model = authorization_model
         self._checker = CheckEngine(
             relations_repository=relations_repository,
             authorization_model=authorization_model,
             max_depth=max_depth,
+            enable_debug=enable_debug,
         )
 
     def lookup_resources(
         self,
+        request: LookupResourcesRequest,
         *,
-        resource_type: str,
-        permission: str,
-        subject: Subject,
         context: ReadContext,
-    ) -> list[Obj]:
-        """Return resources of ``resource_type`` that grant ``permission``."""
-        NamespaceId(resource_type)
-        Relation(permission)
-        subject.require_direct()
+    ) -> LookupResourcesResponse:
+        """Return resources that grant the requested permission to the subject."""
 
-        resources = self._lookup_relation(
-            resource_type=resource_type,
-            relation=permission,
-            subject=subject,
-            context=context,
-            depth=0,
-        )
-        if self._needs_canonical_check_filter(
-            resource_type=resource_type,
-            relation=permission,
-        ):
-            resources = self._filter_authorized_resources(
-                resources=resources,
-                relation=permission,
-                subject=subject,
-                context=context,
+        debug_trace: list[str] | None = [] if self._enable_debug else None
+        diagnostics = _LookupDiagnostics(debug_trace=debug_trace)
+        if debug_trace is not None:
+            debug_trace.append(
+                f"context tenant={context.tenant} revision={context.revision}"
+            )
+            diagnostics.trace(
+                0,
+                (
+                    f"lookup {request.resource_type}#"
+                    f"{request.permission}@{request.subject}"
+                ),
             )
 
-        return sorted(resources, key=str)
+        resources = self._lookup_relation(
+            resource_type=request.resource_type,
+            relation=request.permission,
+            subject=request.subject,
+            context=context,
+            depth=0,
+            diagnostics=diagnostics,
+        )
+        if resources and self._needs_canonical_check_filter(
+            resource_type=request.resource_type,
+            relation=request.permission,
+        ):
+            diagnostics.trace(0, "filter candidates with canonical check")
+            resources = self._filter_authorized_resources(
+                resources=resources,
+                relation=request.permission,
+                subject=request.subject,
+                context=context,
+                diagnostics=diagnostics,
+            )
+
+        return LookupResourcesResponse(
+            resources=tuple(sorted(resources, key=str)),
+            debug_trace=tuple(debug_trace) if debug_trace is not None else None,
+            depth_reached=diagnostics.max_depth_reached,
+            tuples_examined=diagnostics.tuples_examined,
+        )
 
     def _filter_authorized_resources(
         self,
@@ -87,13 +156,18 @@ class LookupEngine:
         relation: str,
         subject: Subject,
         context: ReadContext,
+        diagnostics: _LookupDiagnostics,
     ) -> set[Obj]:
         """Keep complex reverse-lookup candidates aligned with canonical checks."""
 
-        return {
-            obj
-            for obj in resources
-            if self._checker.check(
+        authorized: set[Obj] = set()
+        candidates = (
+            sorted(resources, key=str)
+            if diagnostics.debug_trace is not None
+            else resources
+        )
+        for obj in candidates:
+            response = self._checker.check(
                 CheckRequest(
                     object_type=str(obj.namespace),
                     object_id=str(obj.id),
@@ -102,8 +176,21 @@ class LookupEngine:
                     subject_id=str(subject.id),
                 ),
                 context=context,
-            ).allowed
-        }
+            )
+            label = (
+                f"canonical check {obj}#{relation}@{subject}"
+                if diagnostics.debug_trace is not None
+                else None
+            )
+            diagnostics.merge_check_response(
+                response,
+                depth=0,
+                label=label,
+            )
+            if response.allowed:
+                authorized.add(obj)
+
+        return authorized
 
     def _needs_canonical_check_filter(
         self,
@@ -221,6 +308,7 @@ class LookupEngine:
         subject: Subject,
         context: ReadContext,
         depth: int,
+        diagnostics: _LookupDiagnostics,
     ) -> set[Obj]:
         """Start an independent reverse relation lookup with a fresh cycle stack."""
 
@@ -231,6 +319,7 @@ class LookupEngine:
             context=context,
             depth=depth,
             visited=set(),
+            diagnostics=diagnostics,
         )
 
     def _lookup_recursive(
@@ -241,16 +330,24 @@ class LookupEngine:
         subject: Subject,
         context: ReadContext,
         depth: int,
-        visited: set[tuple[str, str, str]],
+        visited: set[tuple[str, str, Subject]],
+        diagnostics: _LookupDiagnostics,
     ) -> set[Obj]:
+        diagnostics.reached(depth)
         if depth > self._max_depth:
+            if diagnostics.debug_trace is not None:
+                diagnostics.trace(depth, f"Max depth reached: {depth}")
             return set()
 
         try:
             rewrite = self._model.resolve(resource_type, relation)
-        except ValueError:
+        except ValueError as exc:
+            if diagnostics.debug_trace is not None:
+                diagnostics.trace(depth, f"Error: {exc}")
             return set()
 
+        if diagnostics.debug_trace is not None:
+            diagnostics.trace(depth, f"-> lookup {resource_type}#{relation}@{subject}")
         if isinstance(rewrite, (DirectRule, ThisRule)):
             return self._evaluate_rule(
                 rewrite=rewrite,
@@ -260,10 +357,15 @@ class LookupEngine:
                 depth=depth,
                 current_relation=relation,
                 visited=visited,
+                diagnostics=diagnostics,
             )
 
-        key = (resource_type, relation, str(subject))
+        key = (resource_type, relation, subject)
         if key in visited:
+            if diagnostics.debug_trace is not None:
+                diagnostics.trace(
+                    depth, f"cycle skipped: {resource_type}#{relation}@{subject}"
+                )
             return set()
 
         visited.add(key)
@@ -276,6 +378,7 @@ class LookupEngine:
                 depth=depth,
                 current_relation=relation,
                 visited=visited,
+                diagnostics=diagnostics,
             )
         finally:
             visited.remove(key)
@@ -289,7 +392,8 @@ class LookupEngine:
         context: ReadContext,
         depth: int,
         current_relation: str,
-        visited: set[tuple[str, str, str]],
+        visited: set[tuple[str, str, Subject]],
+        diagnostics: _LookupDiagnostics,
     ) -> set[Obj]:
         if isinstance(rewrite, (DirectRule, ThisRule)):
             return self._lookup_direct(
@@ -298,6 +402,7 @@ class LookupEngine:
                 subject=subject,
                 context=context,
                 depth=depth,
+                diagnostics=diagnostics,
             )
 
         if isinstance(rewrite, ComputedUsersetRule):
@@ -308,6 +413,7 @@ class LookupEngine:
                 context=context,
                 depth=depth + 1,
                 visited=visited,
+                diagnostics=diagnostics,
             )
 
         if isinstance(rewrite, TupleToUsersetRule):
@@ -318,6 +424,7 @@ class LookupEngine:
                 subject=subject,
                 context=context,
                 depth=depth,
+                diagnostics=diagnostics,
             )
 
         if isinstance(rewrite, UnionRule):
@@ -332,6 +439,7 @@ class LookupEngine:
                         depth=depth + 1,
                         current_relation=current_relation,
                         visited=visited,
+                        diagnostics=diagnostics,
                     )
                 )
             return result
@@ -347,6 +455,7 @@ class LookupEngine:
                     depth=depth + 1,
                     current_relation=current_relation,
                     visited=visited,
+                    diagnostics=diagnostics,
                 )
                 result = child_result if result is None else result & child_result
                 if not result:
@@ -362,6 +471,7 @@ class LookupEngine:
                 depth=depth + 1,
                 current_relation=current_relation,
                 visited=visited,
+                diagnostics=diagnostics,
             )
             if not base:
                 return set()
@@ -373,6 +483,7 @@ class LookupEngine:
                 depth=depth + 1,
                 current_relation=current_relation,
                 visited=visited,
+                diagnostics=diagnostics,
             )
             return base - subtract
 
@@ -386,9 +497,15 @@ class LookupEngine:
         subject: Subject,
         context: ReadContext,
         depth: int,
+        diagnostics: _LookupDiagnostics,
     ) -> set[Obj]:
         """Walk reverse subject edges until all reachable direct grants are known."""
 
+        diagnostics.reached(depth)
+        if diagnostics.debug_trace is not None:
+            diagnostics.trace(
+                depth, f"walk direct {resource_type}#{relation} from {subject}"
+            )
         resources: set[Obj] = set()
         reachable_usersets = self._reachable_userset_refs(
             resource_type=resource_type,
@@ -405,7 +522,12 @@ class LookupEngine:
         while next_subject < len(worklist):
             current_subject, current_depth = worklist[next_subject]
             next_subject += 1
+            diagnostics.reached(current_depth)
             if current_depth > self._max_depth and current_subject.relation is not None:
+                if diagnostics.debug_trace is not None:
+                    diagnostics.trace(
+                        current_depth, f"Max depth reached: {current_depth}"
+                    )
                 continue
 
             current_ref = (
@@ -419,43 +541,51 @@ class LookupEngine:
                     (),
                 ):
                     userset_depth = current_depth + userset_cost
+                    diagnostics.reached(userset_depth)
                     if userset_depth > self._max_depth:
+                        if diagnostics.debug_trace is not None:
+                            diagnostics.trace(
+                                userset_depth,
+                                f"Max depth reached: {userset_depth}",
+                            )
                         continue
 
+                    userset_subjects: list[Subject] = []
                     if tuple_relation is None:
-                        userset_subjects = (
+                        userset_subjects.append(
                             Subject.from_parts(
                                 parent_ref[0],
                                 str(current_subject.id),
                                 parent_ref[1],
-                            ),
+                            )
                         )
                     else:
-                        userset_subjects = tuple(
-                            Subject.from_parts(
-                                str(relation_tuple.object.namespace),
-                                str(relation_tuple.object.id),
-                                parent_ref[1],
+                        for relation_tuple in self._relations.read_reverse(
+                            TupleFilter(
+                                object_type=parent_ref[0],
+                                relation=tuple_relation,
+                                subject_type=str(current_subject.namespace),
+                                subject_id=str(current_subject.id),
+                                subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
+                            ),
+                            context=context,
+                        ):
+                            diagnostics.tuple_examined()
+                            userset_subjects.append(
+                                Subject.from_parts(
+                                    str(relation_tuple.object.namespace),
+                                    str(relation_tuple.object.id),
+                                    parent_ref[1],
+                                )
                             )
-                            for relation_tuple in self._relations.read_reverse(
-                                TupleFilter(
-                                    object_type=parent_ref[0],
-                                    relation=tuple_relation,
-                                    subject_type=str(current_subject.namespace),
-                                    subject_id=str(current_subject.id),
-                                    subject_relation=(
-                                        TupleFilter.DIRECT_SUBJECT_RELATION
-                                    ),
-                                ),
-                                context=context,
-                            )
-                        )
 
                     for userset_subject in userset_subjects:
                         if not self._userset_semantically_reachable(
                             userset_subject=userset_subject,
                             subject=subject,
                             context=context,
+                            depth=userset_depth,
+                            diagnostics=diagnostics,
                         ):
                             continue
 
@@ -471,6 +601,7 @@ class LookupEngine:
                 TupleFilter.from_subject_bucket(current_subject),
                 context=context,
             ):
+                diagnostics.tuple_examined()
                 if not exact_subject_filter.matches(relation_tuple):
                     continue
 
@@ -480,6 +611,11 @@ class LookupEngine:
                     and target_relation == relation
                 ):
                     resources.add(relation_tuple.object)
+                    if diagnostics.debug_trace is not None:
+                        diagnostics.trace(
+                            current_depth,
+                            f"matched resource: {relation_tuple.object}",
+                        )
 
                 userset_ref = (
                     str(relation_tuple.object.namespace),
@@ -493,15 +629,22 @@ class LookupEngine:
                     str(relation_tuple.object.id),
                     target_relation,
                 )
+                userset_depth = current_depth + 1
+                diagnostics.reached(userset_depth)
+                if userset_depth > self._max_depth:
+                    if diagnostics.debug_trace is not None:
+                        diagnostics.trace(
+                            userset_depth, f"Max depth reached: {userset_depth}"
+                        )
+                    continue
+
                 if not self._userset_semantically_reachable(
                     userset_subject=userset_subject,
                     subject=subject,
                     context=context,
+                    depth=userset_depth,
+                    diagnostics=diagnostics,
                 ):
-                    continue
-
-                userset_depth = current_depth + 1
-                if userset_depth > self._max_depth:
                     continue
 
                 seen_depth = seen_depths.get(userset_subject)
@@ -522,6 +665,7 @@ class LookupEngine:
         subject: Subject,
         context: ReadContext,
         depth: int,
+        diagnostics: _LookupDiagnostics,
     ) -> set[Obj]:
         resources: set[Obj] = set()
         for target_type in self._model.tuple_to_userset_target_types(
@@ -534,22 +678,28 @@ class LookupEngine:
                 subject=subject,
                 context=context,
                 depth=depth + 1,
+                diagnostics=diagnostics,
             )
             for parent in parent_resources:
                 parent_subject = Subject.from_object(parent)
-                resources.update(
-                    t.object
-                    for t in self._relations.read_reverse(
-                        TupleFilter(
-                            object_type=resource_type,
-                            relation=tuple_relation,
-                            subject_type=str(parent_subject.namespace),
-                            subject_id=str(parent_subject.id),
-                            subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
-                        ),
-                        context=context,
-                    )
-                )
+                for relation_tuple in self._relations.read_reverse(
+                    TupleFilter(
+                        object_type=resource_type,
+                        relation=tuple_relation,
+                        subject_type=str(parent_subject.namespace),
+                        subject_id=str(parent_subject.id),
+                        subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
+                    ),
+                    context=context,
+                ):
+                    diagnostics.tuple_examined()
+                    resources.add(relation_tuple.object)
+                    if diagnostics.debug_trace is not None:
+                        message = (
+                            "matched tuple-to-userset resource: "
+                            f"{relation_tuple.object}"
+                        )
+                        diagnostics.trace(depth, message)
         return resources
 
     def _reachable_userset_refs(
@@ -688,6 +838,8 @@ class LookupEngine:
         userset_subject: Subject,
         subject: Subject,
         context: ReadContext,
+        depth: int,
+        diagnostics: _LookupDiagnostics,
     ) -> bool:
         assert userset_subject.relation is not None
         rewrite = self._model.resolve(
@@ -697,7 +849,7 @@ class LookupEngine:
         if isinstance(rewrite, (DirectRule, ThisRule)):
             return True
 
-        return self._checker.check(
+        response = self._checker.check(
             CheckRequest(
                 object_type=str(userset_subject.namespace),
                 object_id=str(userset_subject.id),
@@ -706,7 +858,18 @@ class LookupEngine:
                 subject_id=str(subject.id),
             ),
             context=context,
-        ).allowed
+        )
+        label = (
+            f"semantic check {userset_subject} contains {subject}"
+            if diagnostics.debug_trace is not None
+            else None
+        )
+        diagnostics.merge_check_response(
+            response,
+            depth=depth,
+            label=label,
+        )
+        return response.allowed
 
     @staticmethod
     def _direct_subject_matches(subject: Subject) -> tuple[Subject, ...]:

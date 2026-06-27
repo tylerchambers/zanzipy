@@ -9,6 +9,7 @@ from .errors import (
 from .filter import TupleFilter
 from .id import EntityId
 from .identifier import Identifier
+from .lookup import LookupResourcesRequest, LookupResourcesResponse
 from .namespace import NamespaceId
 from .object import Obj
 from .relation import Relation
@@ -23,6 +24,8 @@ __all__ = [
     "Identifier",
     "IdentifierValidationError",
     "InvalidTupleFormatError",
+    "LookupResourcesRequest",
+    "LookupResourcesResponse",
     "NamespaceId",
     "Obj",
     "ObjectValidationError",

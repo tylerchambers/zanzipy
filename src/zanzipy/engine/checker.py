@@ -64,8 +64,8 @@ class CheckEngine:
     ) -> CheckResponse:
         """Evaluate one check request in the supplied tenant revision context.
 
-        Debug traces and counters are populated only when the engine was created
-        with debug support enabled.
+        Debug traces are populated only when the engine was created with debug
+        support enabled. Counters always record traversal work.
         """
         visited: set[tuple[str, str, str, str, str]] = set()
         debug_trace: list[str] | None = [] if self._enable_debug else None
