@@ -229,42 +229,63 @@ class LookupEngine:
         context: ReadContext,
         depth: int,
     ) -> set[Obj]:
-        resources: set[Obj] = set()
-        for direct_subject in self._direct_subject_matches(subject):
-            resources.update(
-                t.object
-                for t in self._relations.read_reverse(
-                    TupleFilter(
-                        object_type=resource_type,
-                        relation=relation,
-                        subject_type=str(direct_subject.namespace),
-                        subject_id=str(direct_subject.id),
-                        subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
-                    ),
-                    context=context,
-                )
-            )
+        """Walk reverse subject edges until all reachable direct grants are known."""
 
-        for userset in self._containing_usersets(
+        resources: set[Obj] = set()
+        reachable_usersets = self._reachable_userset_refs(
             resource_type=resource_type,
             relation=relation,
-            subject=subject,
-            context=context,
-            depth=depth,
-        ):
-            resources.update(
-                t.object
-                for t in self._relations.read_reverse(
-                    TupleFilter(
-                        object_type=resource_type,
-                        relation=relation,
-                        subject_type=str(userset.namespace),
-                        subject_id=str(userset.id),
-                        subject_relation=str(userset.relation),
-                    ),
-                    context=context,
+        )
+        worklist = [
+            (direct_subject, depth)
+            for direct_subject in self._direct_subject_matches(subject)
+        ]
+        seen_depths = dict(worklist)
+        next_subject = 0
+
+        while next_subject < len(worklist):
+            current_subject, current_depth = worklist[next_subject]
+            next_subject += 1
+            if current_depth > self._max_depth:
+                continue
+
+            exact_subject_filter = TupleFilter.from_subject(current_subject)
+            for relation_tuple in self._relations.read_reverse(
+                TupleFilter.from_subject_bucket(current_subject),
+                context=context,
+            ):
+                if not exact_subject_filter.matches(relation_tuple):
+                    continue
+
+                target_relation = str(relation_tuple.relation)
+                if (
+                    str(relation_tuple.object.namespace) == resource_type
+                    and target_relation == relation
+                ):
+                    resources.add(relation_tuple.object)
+
+                userset_ref = (
+                    str(relation_tuple.object.namespace),
+                    target_relation,
                 )
-            )
+                if userset_ref not in reachable_usersets:
+                    continue
+
+                userset_depth = current_depth + 1
+                if userset_depth > self._max_depth:
+                    continue
+
+                userset_subject = Subject.from_parts(
+                    str(relation_tuple.object.namespace),
+                    str(relation_tuple.object.id),
+                    target_relation,
+                )
+                seen_depth = seen_depths.get(userset_subject)
+                if seen_depth is not None and seen_depth <= userset_depth:
+                    continue
+
+                seen_depths[userset_subject] = userset_depth
+                worklist.append((userset_subject, userset_depth))
 
         return resources
 
@@ -307,36 +328,35 @@ class LookupEngine:
                 )
         return resources
 
-    def _containing_usersets(
+    def _reachable_userset_refs(
         self,
         *,
         resource_type: str,
         relation: str,
-        subject: Subject,
-        context: ReadContext,
-        depth: int,
-    ) -> set[Subject]:
-        usersets: set[Subject] = set()
-        for subject_type, subject_relation in self._model.allowed_userset_refs(
-            resource_type=resource_type,
-            relation=relation,
-        ):
-            containing_objects = self._lookup_relation(
+    ) -> set[tuple[str, str]]:
+        reachable = set(
+            self._model.allowed_userset_refs(
+                resource_type=resource_type,
+                relation=relation,
+            )
+        )
+        worklist = list(reachable)
+        next_ref = 0
+
+        while next_ref < len(worklist):
+            subject_type, subject_relation = worklist[next_ref]
+            next_ref += 1
+            nested_refs = self._model.allowed_userset_refs(
                 resource_type=subject_type,
                 relation=subject_relation,
-                subject=subject,
-                context=context,
-                depth=depth + 1,
             )
-            usersets.update(
-                Subject.from_parts(
-                    str(obj.namespace),
-                    str(obj.id),
-                    subject_relation,
-                )
-                for obj in containing_objects
-            )
-        return usersets
+            for nested_ref in nested_refs:
+                if nested_ref in reachable:
+                    continue
+                reachable.add(nested_ref)
+                worklist.append(nested_ref)
+
+        return reachable
 
     @staticmethod
     def _direct_subject_matches(subject: Subject) -> tuple[Subject, ...]:

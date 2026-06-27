@@ -236,7 +236,7 @@ with Session(engine) as db:
     print(f"- Eve: {chk('document:spec', 'can_view', us['Eve'])}")
 
 # Demonstrate cache behavior with repeated queries; subsequent calls should
-# hit the LRU cache on both object reads and subject-bucket reverse lookups.
+# hit the LRU cache on object reads and subject-bucket reverse lookup.
 with Session(engine) as db:
     us = {u.name: u for u in db.query(User).all()}
     _ = chk("document:spec", "can_view", us["Bob"])  # warm object buckets

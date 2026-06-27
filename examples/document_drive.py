@@ -26,7 +26,7 @@ Highlights of the model
 
 3) Subject sets and expansion: assigning a subject like "group:eng#member" to
    a relation (e.g., folder.viewer) expands to all principals who are members
-   of that group.
+   of that group; reverse lookup walks those edges from subject to resource.
 
 4) Tuple-to-Userset: documents include subjects from their folder's viewer
    relation. We model that by giving each document a direct relation "parent"
