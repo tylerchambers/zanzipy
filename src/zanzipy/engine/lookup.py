@@ -16,6 +16,7 @@ from zanzipy.schema.rules import (
 
 if TYPE_CHECKING:
     from zanzipy.schema.registry import SchemaRegistry
+    from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
     from zanzipy.storage.repos.abstract.relations import RelationRepository
     from zanzipy.storage.revision import ReadContext
 
@@ -29,12 +30,16 @@ class LookupEngine:
         relations_repository: RelationRepository,
         schema: SchemaRegistry,
         max_depth: int = 25,
+        compiled_rules_cache: CompiledRuleCache[RewriteRule] | None = None,
     ) -> None:
         """Create a reverse lookup engine over a repository and schema."""
         self._relations = relations_repository
         self._schema = schema
         self._max_depth = max_depth
-        self._resolver = RuleResolver(schema=schema)
+        self._resolver = RuleResolver(
+            schema=schema,
+            compiled_rules_cache=compiled_rules_cache,
+        )
 
     def lookup_resources(
         self,
@@ -49,7 +54,7 @@ class LookupEngine:
         Relation(permission)
         subject.require_direct()
 
-        resources = self._lookup_recursive(
+        resources = self._lookup_relation(
             resource_type=resource_type,
             relation=permission,
             subject=subject,
@@ -57,6 +62,26 @@ class LookupEngine:
             depth=0,
         )
         return sorted(resources, key=str)
+
+    def _lookup_relation(
+        self,
+        *,
+        resource_type: str,
+        relation: str,
+        subject: Subject,
+        context: ReadContext,
+        depth: int,
+    ) -> set[Obj]:
+        """Start an independent reverse relation lookup with a fresh cycle stack."""
+
+        return self._lookup_recursive(
+            resource_type=resource_type,
+            relation=relation,
+            subject=subject,
+            context=context,
+            depth=depth,
+            visited=set(),
+        )
 
     def _lookup_recursive(
         self,
@@ -66,6 +91,7 @@ class LookupEngine:
         subject: Subject,
         context: ReadContext,
         depth: int,
+        visited: set[tuple[str, str, str]],
     ) -> set[Obj]:
         if depth > self._max_depth:
             return set()
@@ -75,14 +101,34 @@ class LookupEngine:
         except ValueError:
             return set()
 
-        return self._evaluate_rule(
-            rewrite=rewrite,
-            resource_type=resource_type,
-            subject=subject,
-            context=context,
-            depth=depth,
-            current_relation=relation,
-        )
+        if isinstance(rewrite, (DirectRule, ThisRule)):
+            return self._evaluate_rule(
+                rewrite=rewrite,
+                resource_type=resource_type,
+                subject=subject,
+                context=context,
+                depth=depth,
+                current_relation=relation,
+                visited=visited,
+            )
+
+        key = (resource_type, relation, str(subject))
+        if key in visited:
+            return set()
+
+        visited.add(key)
+        try:
+            return self._evaluate_rule(
+                rewrite=rewrite,
+                resource_type=resource_type,
+                subject=subject,
+                context=context,
+                depth=depth,
+                current_relation=relation,
+                visited=visited,
+            )
+        finally:
+            visited.remove(key)
 
     def _evaluate_rule(
         self,
@@ -93,6 +139,7 @@ class LookupEngine:
         context: ReadContext,
         depth: int,
         current_relation: str,
+        visited: set[tuple[str, str, str]],
     ) -> set[Obj]:
         if isinstance(rewrite, (DirectRule, ThisRule)):
             return self._lookup_direct(
@@ -110,6 +157,7 @@ class LookupEngine:
                 subject=subject,
                 context=context,
                 depth=depth + 1,
+                visited=visited,
             )
 
         if isinstance(rewrite, TupleToUsersetRule):
@@ -133,6 +181,7 @@ class LookupEngine:
                         context=context,
                         depth=depth + 1,
                         current_relation=current_relation,
+                        visited=visited,
                     )
                 )
             return result
@@ -147,6 +196,7 @@ class LookupEngine:
                     context=context,
                     depth=depth + 1,
                     current_relation=current_relation,
+                    visited=visited,
                 )
                 result = child_result if result is None else result & child_result
                 if not result:
@@ -161,6 +211,7 @@ class LookupEngine:
                 context=context,
                 depth=depth + 1,
                 current_relation=current_relation,
+                visited=visited,
             )
             if not base:
                 return set()
@@ -171,6 +222,7 @@ class LookupEngine:
                 context=context,
                 depth=depth + 1,
                 current_relation=current_relation,
+                visited=visited,
             )
             return base - subtract
 
@@ -239,7 +291,7 @@ class LookupEngine:
             resource_type=resource_type,
             tuple_relation=tuple_relation,
         ):
-            parent_resources = self._lookup_recursive(
+            parent_resources = self._lookup_relation(
                 resource_type=target_type,
                 relation=computed_relation,
                 subject=subject,
@@ -277,7 +329,7 @@ class LookupEngine:
             resource_type,
             relation,
         ):
-            containing_objects = self._lookup_recursive(
+            containing_objects = self._lookup_relation(
                 resource_type=subject_type,
                 relation=subject_relation,
                 subject=subject,

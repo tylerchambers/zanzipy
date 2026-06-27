@@ -76,6 +76,44 @@ class TestCachedRelationRepository:
             second,
         ]
 
+    def test_constrained_reverse_filter_uses_subject_cache_bucket(self) -> None:
+        backend = InMemoryRelationRepository()
+        cache = LruTupleCache(max_entries=100, ttl_seconds=None)
+        repo = CachedRelationRepository(backend, cache=cache)
+
+        matching = _rt("doc", "1", "viewer", "user", "alice")
+        other_relation = _rt("doc", "2", "editor", "user", "alice")
+        other_subject = _rt("doc", "3", "viewer", "user", "bob")
+        write = repo.write(
+            WriteContext(TENANT),
+            (
+                TupleMutation.touch(matching),
+                TupleMutation.touch(other_relation),
+                TupleMutation.touch(other_subject),
+            ),
+        )
+        filt = TupleFilter(
+            object_type="doc",
+            relation="viewer",
+            subject_type="user",
+            subject_id="alice",
+            subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
+        )
+
+        assert list(repo.read_reverse(filt, context=_read_context(write.revision))) == [
+            matching
+        ]
+        after_fill = cache.info()
+        assert after_fill["misses"] == 1
+        assert after_fill["size_subjects"] == 1
+
+        assert list(repo.read_reverse(filt, context=_read_context(write.revision))) == [
+            matching
+        ]
+        after_hit = cache.info()
+        assert after_hit["hits"] == 1
+        assert after_hit["size_subjects"] == 1
+
     def test_cache_does_not_return_deleted_tuple_at_newer_revision(self) -> None:
         backend = InMemoryRelationRepository()
         cache = LruTupleCache(max_entries=100, ttl_seconds=None)

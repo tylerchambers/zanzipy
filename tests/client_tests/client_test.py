@@ -1,6 +1,7 @@
 import pytest
 
 from zanzipy.client import ZanzibarClient
+from zanzipy.engine.authorization import AuthorizationEngine
 from zanzipy.models import TupleFilter
 from zanzipy.models.errors import IdentifierValidationError, InvalidTupleFormatError
 from zanzipy.models.tuple import RelationTuple
@@ -257,6 +258,35 @@ class TestZanzibarClient:
         assert res_dbg.allowed is True
         assert isinstance(res_dbg.debug_trace, list)
         assert res_dbg.debug_trace[0] == "context tenant=default revision=1"
+
+    def test_authorization_engine_boundary_can_back_client_reads(self) -> None:
+        registry = self._base_registry()
+        repo = InMemoryRelationRepository()
+        engine = AuthorizationEngine(
+            relations_repository=repo,
+            schema=registry,
+            max_depth=7,
+            enable_debug=True,
+        )
+        client = ZanzibarClient.from_authorization_engine(engine, tenant="acme")
+
+        client.write("document:doc", "owner", "user:alice")
+
+        assert client.authorization_engine is engine
+        assert client.relations_repository is repo
+        assert client.schema is registry
+        assert client.max_check_depth == 7
+        assert client.enable_debug is True
+        assert client.check("document:doc", "owner", "user:alice") is True
+
+        detailed = client.check_detailed("document:doc", "owner", "user:alice")
+        assert detailed.allowed is True
+        assert detailed.debug_trace is not None
+        assert detailed.debug_trace[0] == "context tenant=acme revision=1"
+        assert client.list_objects("document", "owner", "user:alice") == [
+            "document:doc"
+        ]
+        assert client.expand("document:doc", "owner").users == {"user:alice"}
 
     def test_list_objects_happy_and_errors(self) -> None:
         registry = self._base_registry()

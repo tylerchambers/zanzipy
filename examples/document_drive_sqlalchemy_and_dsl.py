@@ -15,6 +15,7 @@ Run:
     uv run python examples/document_drive_sqlalchemy_and_dsl.py
 
 """
+
 from uuid import uuid4
 
 from sqlalchemy import Column, ForeignKey, String, Table, create_engine, insert
@@ -235,13 +236,19 @@ with Session(engine) as db:
     print(f"- Eve: {chk('document:spec', 'can_view', us['Eve'])}")
 
 # Demonstrate cache behavior with repeated queries; subsequent calls should
-# hit the LRU cache on relation tuple reads (by-object and/or reverse reads).
+# hit the LRU cache on both object reads and subject-bucket reverse lookups.
 with Session(engine) as db:
     us = {u.name: u for u in db.query(User).all()}
-    _ = chk("document:spec", "can_view", us["Bob"])  # warm cache
-    _ = chk("document:spec", "can_view", us["Bob"])  # likely cache hit
-    _ = client.expand("document:spec", "can_view")  # warm
-    _ = client.expand("document:spec", "can_view")  # likely hit
+    _ = chk("document:spec", "can_view", us["Bob"])  # warm object buckets
+    _ = chk("document:spec", "can_view", us["Bob"])  # object-cache hit
+    _ = client.expand("document:spec", "can_view")  # object-cache hit
+    bob_docs = client.list_objects(
+        "document", "can_view", f"user:{us['Bob'].id}"
+    )  # warm subject buckets
+    bob_docs = client.list_objects(
+        "document", "can_view", f"user:{us['Bob'].id}"
+    )  # subject-cache hits
+print(f"Documents Bob can view via lookup: {bob_docs}")
 
 # Demonstrate revision-scoped cache keys: write/delete create new revisions,
 # so old cached buckets remain valid and newer reads use distinct entries.

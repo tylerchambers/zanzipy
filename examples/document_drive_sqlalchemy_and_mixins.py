@@ -266,8 +266,10 @@ print(f"- Charlie: {document.check(charlie, 'can_view')}")
 print(f"- Dora: {document.check(dora, 'can_view')}")
 print(f"- Eve: {document.check(eve, 'can_view')}")
 
-# Demonstrate cache behavior with repeated queries
-_ = document.check(bob, "can_view")  # warm cache
-_ = document.check(bob, "can_view")  # likely cache hit
-_ = document.who_can("can_view")  # warm
-_ = document.who_can("can_view")  # likely hit
+# Demonstrate cache behavior with repeated queries, including reverse lookup.
+_ = document.check(bob, "can_view")  # warm object buckets
+_ = document.check(bob, "can_view")  # object-cache hit
+_ = document.who_can("can_view")  # object-cache hit
+bob_docs = bob.get_accessible("document", "can_view")  # warm subject buckets
+bob_docs = bob.get_accessible("document", "can_view")  # subject-cache hits
+print(f"Documents Bob can view via lookup: {[str(obj) for obj in bob_docs]}")

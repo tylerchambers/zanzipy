@@ -178,13 +178,8 @@ class TupleFilter:
 
     @property
     def is_subject_bucket(self) -> bool:
-        """Return whether this filter selects a subject cache bucket."""
-        return (
-            self.subject_type is not None
-            and self.subject_id is not None
-            and self.object_type is None
-            and self.object_id is None
-        )
+        """Return whether this filter can be served from a subject cache bucket."""
+        return self.subject_type is not None and self.subject_id is not None
 
     def subject_bucket_filter(self) -> TupleFilter:
         """Return the broader subject-bucket filter for this subject.

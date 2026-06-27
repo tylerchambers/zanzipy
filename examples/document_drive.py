@@ -308,8 +308,9 @@ def can_edit_doc(doc_id: str, user_id: str) -> bool:
 def list_docs_user_can_view(user_id: str) -> list[str]:
     """Enumerate documents a user can view.
 
-    Uses a correctness-first strategy: discover candidate documents from
-    existing tuples, then evaluate each with the full rules engine.
+    Uses the rewrite-aware reverse LookupResources path behind
+    ``client.list_objects`` rather than scanning candidate documents and
+    checking them one by one.
     """
 
     return client.list_objects("document", "can_view", f"user:{user_id}")
