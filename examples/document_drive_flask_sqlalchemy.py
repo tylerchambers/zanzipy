@@ -244,7 +244,7 @@ def create_app() -> Flask:
 
     @app.get("/user/<user_id>/documents/can_view")
     def user_documents_can_view(user_id: str):  # type: ignore[override]
-        # Exercise the rewrite-aware reverse LookupResources path.
+        # Exercise reverse subject-bucket LookupResources.
         client = current_zanzibar.client
         if client is None:
             raise RuntimeError("Zanzibar client not configured")

@@ -266,7 +266,7 @@ print(f"- Charlie: {document.check(charlie, 'can_view')}")
 print(f"- Dora: {document.check(dora, 'can_view')}")
 print(f"- Eve: {document.check(eve, 'can_view')}")
 
-# Demonstrate cache behavior with repeated queries, including reverse lookup.
+# Demonstrate cache behavior with subject-bucket reverse lookup.
 _ = document.check(bob, "can_view")  # warm object buckets
 _ = document.check(bob, "can_view")  # object-cache hit
 _ = document.who_can("can_view")  # object-cache hit
