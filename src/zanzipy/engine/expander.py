@@ -1,20 +1,21 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from zanzipy.engine.rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject, TupleFilter
-from zanzipy.schema.rules import (
-    ComputedUsersetRule,
-    DirectRule,
-    ExclusionRule,
-    IntersectionRule,
-    RewriteRule,
-    ThisRule,
-    TupleToUsersetRule,
-    UnionRule,
-)
 
 if TYPE_CHECKING:
     from zanzipy.schema.compiled import CompiledAuthorizationModel
+    from zanzipy.schema.rules import (
+        ComputedUsersetRule,
+        DirectRule,
+        ExclusionRule,
+        IntersectionRule,
+        RewriteRule,
+        ThisRule,
+        TupleToUsersetRule,
+        UnionRule,
+    )
     from zanzipy.storage.repos.abstract.relations import RelationRepository
     from zanzipy.storage.revision import ReadContext
 
@@ -52,7 +53,7 @@ class SubjectSet:
         )
 
 
-class ExpansionEngine:
+class ExpansionEngine(RewriteRuleDispatcher):
     """Expands a relation/permission into the set of subjects that grant it.
 
     Direct and union expansion preserve subject-set anchors. Intersection and
@@ -143,78 +144,98 @@ class ExpansionEngine:
         current_relation: str,
     ) -> SubjectSet:
         """Evaluate one rewrite rule against the current object."""
-        if isinstance(rewrite, (DirectRule, ThisRule)):
-            return self._expand_direct(
-                object_type=object_type,
-                object_id=object_id,
-                context=context,
-                effective_relation=current_relation,
-            )
 
-        if isinstance(rewrite, ComputedUsersetRule):
-            return self._expand_recursive(
-                object_type=object_type,
-                object_id=object_id,
-                relation=rewrite.relation,
-                context=context,
-                depth=depth + 1,
-                visited=visited,
-            )
+        return self._dispatch_rewrite_rule(
+            rewrite,
+            direct=self._evaluate_direct_or_this_rule,
+            this=self._evaluate_direct_or_this_rule,
+            computed_userset=self._evaluate_computed_userset_rule,
+            tuple_to_userset=self._evaluate_tuple_to_userset_rule,
+            union=self._evaluate_union_rule,
+            intersection=self._evaluate_intersection_rule,
+            exclusion=self._evaluate_exclusion_rule,
+            object_type=object_type,
+            object_id=object_id,
+            context=context,
+            depth=depth,
+            visited=visited,
+            current_relation=current_relation,
+        )
 
-        if isinstance(rewrite, TupleToUsersetRule):
-            return self._expand_tuple_to_userset(
-                object_type=object_type,
-                object_id=object_id,
-                tuple_relation=rewrite.tuple_relation,
-                computed_relation=rewrite.computed_relation,
-                context=context,
-                depth=depth,
-                visited=visited,
-            )
+    def _evaluate_direct_or_this_rule(
+        self,
+        _rewrite: DirectRule | ThisRule,
+        *,
+        object_type: str,
+        object_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str]],
+        current_relation: str,
+    ) -> SubjectSet:
+        return self._expand_direct(
+            object_type=object_type,
+            object_id=object_id,
+            context=context,
+            effective_relation=current_relation,
+        )
 
-        if isinstance(rewrite, UnionRule):
-            result = SubjectSet()
-            for child in rewrite.children:
-                child_set = self._evaluate_rule(
-                    rewrite=child,
-                    object_type=object_type,
-                    object_id=object_id,
-                    context=context,
-                    depth=depth + 1,
-                    visited=visited,
-                    current_relation=current_relation,
-                )
-                result = result.union(child_set)
-            return result
+    def _evaluate_computed_userset_rule(
+        self,
+        rewrite: ComputedUsersetRule,
+        *,
+        object_type: str,
+        object_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str]],
+        current_relation: str,
+    ) -> SubjectSet:
+        return self._expand_recursive(
+            object_type=object_type,
+            object_id=object_id,
+            relation=rewrite.relation,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+        )
 
-        if isinstance(rewrite, IntersectionRule):
-            accum: set[str] | None = None
-            for child in rewrite.children:
-                child_set = self._evaluate_rule(
-                    rewrite=child,
-                    object_type=object_type,
-                    object_id=object_id,
-                    context=context,
-                    depth=depth + 1,
-                    visited=visited,
-                    current_relation=current_relation,
-                )
-                child_subjects = self._materialize(
-                    child_set,
-                    context=context,
-                    depth=depth + 1,
-                    visited=visited,
-                )
-                accum = (
-                    child_subjects
-                    if accum is None
-                    else accum.intersection(child_subjects)
-                )
-            return self._subject_set_from_subjects(accum or set())
+    def _evaluate_tuple_to_userset_rule(
+        self,
+        rewrite: TupleToUsersetRule,
+        *,
+        object_type: str,
+        object_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str]],
+        current_relation: str,
+    ) -> SubjectSet:
+        return self._expand_tuple_to_userset(
+            object_type=object_type,
+            object_id=object_id,
+            tuple_relation=rewrite.tuple_relation,
+            computed_relation=rewrite.computed_relation,
+            context=context,
+            depth=depth,
+            visited=visited,
+        )
 
-        if isinstance(rewrite, ExclusionRule):
-            base = self._evaluate_rule(
-                rewrite=rewrite.base,
+    def _evaluate_union_rule(
+        self,
+        rewrite: UnionRule,
+        *,
+        object_type: str,
+        object_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str]],
+        current_relation: str,
+    ) -> SubjectSet:
+        result = SubjectSet()
+        for child in rewrite.children:
+            child_set = self._evaluate_rule(
+                rewrite=child,
                 object_type=object_type,
                 object_id=object_id,
                 context=context,
@@ -222,8 +243,24 @@ class ExpansionEngine:
                 visited=visited,
                 current_relation=current_relation,
             )
-            subtract = self._evaluate_rule(
-                rewrite=rewrite.subtract,
+            result = result.union(child_set)
+        return result
+
+    def _evaluate_intersection_rule(
+        self,
+        rewrite: IntersectionRule,
+        *,
+        object_type: str,
+        object_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str]],
+        current_relation: str,
+    ) -> SubjectSet:
+        accum: set[str] | None = None
+        for child in rewrite.children:
+            child_set = self._evaluate_rule(
+                rewrite=child,
                 object_type=object_type,
                 object_id=object_id,
                 context=context,
@@ -231,22 +268,59 @@ class ExpansionEngine:
                 visited=visited,
                 current_relation=current_relation,
             )
-            base_subjects = self._materialize(
-                base,
+            child_subjects = self._materialize(
+                child_set,
                 context=context,
                 depth=depth + 1,
                 visited=visited,
             )
-            subtract_subjects = self._materialize(
-                subtract,
-                context=context,
-                depth=depth + 1,
-                visited=visited,
+            accum = (
+                child_subjects if accum is None else accum.intersection(child_subjects)
             )
-            return self._subject_set_from_subjects(base_subjects - subtract_subjects)
+        return self._subject_set_from_subjects(accum or set())
 
-        # Unknown node
-        return SubjectSet()
+    def _evaluate_exclusion_rule(
+        self,
+        rewrite: ExclusionRule,
+        *,
+        object_type: str,
+        object_id: str,
+        context: ReadContext,
+        depth: int,
+        visited: set[tuple[str, str, str]],
+        current_relation: str,
+    ) -> SubjectSet:
+        base = self._evaluate_rule(
+            rewrite=rewrite.base,
+            object_type=object_type,
+            object_id=object_id,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+            current_relation=current_relation,
+        )
+        subtract = self._evaluate_rule(
+            rewrite=rewrite.subtract,
+            object_type=object_type,
+            object_id=object_id,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+            current_relation=current_relation,
+        )
+        base_subjects = self._materialize(
+            base,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+        )
+        subtract_subjects = self._materialize(
+            subtract,
+            context=context,
+            depth=depth + 1,
+            visited=visited,
+        )
+        return self._subject_set_from_subjects(base_subjects - subtract_subjects)
 
     def _materialize(
         self,
