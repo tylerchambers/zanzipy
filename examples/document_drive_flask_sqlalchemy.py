@@ -18,6 +18,7 @@ Then visit:
     http://127.0.0.1:5000/folder/<folder_id>/can_view/<user_id>
     http://127.0.0.1:5000/document/<doc_id>/can_view/<user_id>
     http://127.0.0.1:5000/team/<team_id>/has_member/<user_id>
+    http://127.0.0.1:5000/user/<user_id>/documents/can_view
 """
 
 from dataclasses import dataclass, field
@@ -216,7 +217,7 @@ def create_app() -> Flask:
     zanzibar.init_app(app)
 
     # Seed domain and tuples
-    seed_data(SessionLocal)
+    app.config["DEMO_IDS"] = seed_data(SessionLocal)
 
     # Routes using proxy and/or mixins
     @app.get("/folder/<folder_id>/can_view/<user_id>")
@@ -241,10 +242,19 @@ def create_app() -> Flask:
         )
         return jsonify({"allowed": allowed})
 
+    @app.get("/user/<user_id>/documents/can_view")
+    def user_documents_can_view(user_id: str):  # type: ignore[override]
+        # Exercise the rewrite-aware reverse LookupResources path.
+        client = current_zanzibar.client
+        if client is None:
+            raise RuntimeError("Zanzibar client not configured")
+        objects = client.list_objects("document", "can_view", f"user:{user_id}")
+        return jsonify({"objects": objects})
+
     return app
 
 
-def seed_data(SessionLocal) -> None:
+def seed_data(SessionLocal) -> dict[str, str]:
     # Create resource instances (not persisted)
     global folder, document
     folder = Folder(name="Project")
@@ -273,18 +283,29 @@ def seed_data(SessionLocal) -> None:
         document.grant(folder, "parent")
         document.grant(dora, "editor")
 
+        demo_ids = {
+            "folder": folder.id,
+            "document": document.id,
+            "alice": alice.id,
+            "bob": bob.id,
+            "charlie": charlie.id,
+            "dora": dora.id,
+            "eve": eve.id,
+            "eng_team": eng.id,
+        }
+
         # Shell-friendly exports for easy copy/paste in your terminal
         print()
         print("-" * 80)
         print("# Environment variables for testing:")
-        print(f"export FOLDER_ID='{folder.id}'")
-        print(f"export DOCUMENT_ID='{document.id}'")
-        print(f"export ALICE_ID='{alice.id}'")
-        print(f"export BOB_ID='{bob.id}'")
-        print(f"export CHARLIE_ID='{charlie.id}'")
-        print(f"export DORA_ID='{dora.id}'")
-        print(f"export EVE_ID='{eve.id}'")
-        print(f"export ENG_TEAM_ID='{eng.id}'")
+        print(f"export FOLDER_ID='{demo_ids['folder']}'")
+        print(f"export DOCUMENT_ID='{demo_ids['document']}'")
+        print(f"export ALICE_ID='{demo_ids['alice']}'")
+        print(f"export BOB_ID='{demo_ids['bob']}'")
+        print(f"export CHARLIE_ID='{demo_ids['charlie']}'")
+        print(f"export DORA_ID='{demo_ids['dora']}'")
+        print(f"export EVE_ID='{demo_ids['eve']}'")
+        print(f"export ENG_TEAM_ID='{demo_ids['eng_team']}'")
         print("-" * 80)
         print()
         # Then to test, you can run curl commands like:
@@ -294,10 +315,13 @@ def seed_data(SessionLocal) -> None:
         # curl -s http://127.0.0.1:5000/document/$DOCUMENT_ID/can_view/$BOB_ID
         # curl -s http://127.0.0.1:5000/team/$ENG_TEAM_ID/has_member/$ALICE_ID
         # curl -s http://127.0.0.1:5000/team/$ENG_TEAM_ID/has_member/$BOB_ID
+        # curl -s http://127.0.0.1:5000/user/$BOB_ID/documents/can_view
+
+        return demo_ids
 
 
 if __name__ == "__main__":
     app = create_app()
     print("=== Document Drive (Flask + SQLAlchemy + Mixins) ===")
     print("App started on http://127.0.0.1:5000")
-    app.run(debug=True)
+    app.run(debug=True, use_reloader=False)

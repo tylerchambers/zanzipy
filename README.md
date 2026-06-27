@@ -119,12 +119,13 @@ The repository examples cover the same document-drive authorization model at inc
 - `examples/document_drive_sqlalchemy_and_mixins.py` — domain model helpers via `AuthorizableResource`, `AuthorizableSubject`, and `ZanzibarEngine`.
 - `examples/document_drive_flask_sqlalchemy.py` — Flask extension, request-scoped engine binding, mixins, and SQLAlchemy (`zanzipy[flask,sqlalchemy]`).
 
-From a checkout, run the non-server examples with `uv run python <path>`. The Flask example starts a local server and prints IDs for curl requests.
+From a checkout, run the non-server examples with `uv run python <path>`. The Flask example starts a local server and prints IDs for curl requests, including a `list_objects` route that exercises reverse LookupResources.
 
 ### Key features 🧰
 - ✨ DSL‑first schema authoring (`SchemaBuilder`, `NamespaceBuilder`).
 - 🔗 Zanzibar semantics: relations, permissions, union/intersection/exclusion, tuple‑to‑userset.
 - ✅ Correctness‑first evaluation: cycle detection, max‑depth limits, and subject expansion.
+- 🔎 Rewrite-aware reverse lookup: `list_objects` evaluates `LookupResources` without scanning every candidate object, and constrained reverse reads can use subject-bucket tuple caches.
 - 🧩 Simple client API: `write`, `delete`, `check`, `list_objects`, `expand`.
 - Tenant-scoped revisioned storage: writes return `WriteResult` with a tenant-scoped `RevisionToken`; snapshot reads prefer the token and reject mismatched tenant tokens.
 - Storage-agnostic: implement tenant-scoped `RelationRepository`; start with in-memory. SQLite uses `BEGIN IMMEDIATE` to serialize revision allocation; SQLAlchemy retries transient tenant-revision insert/serialization conflicts and surfaces the database error if retries are exhausted.
