@@ -126,7 +126,7 @@ class InMemoryRelationRepository(RelationRepository):
         if after > head:
             raise ValueError(f"requested revision {after} is newer than head {head}")
         for change in self._changes.get(str(tenant), []):
-            if change.revision > after:
+            if change.token.revision > after:
                 yield change
 
     def info(self) -> dict[str, object]:
@@ -177,7 +177,7 @@ class InMemoryRelationRepository(RelationRepository):
         self._snapshots[tenant_key][revision.value] = dict(self._tuples[tenant_key])
         self._changes[tenant_key].extend(
             RelationshipChange(
-                revision=revision,
+                token=RevisionToken(tenant, revision),
                 relation_tuple=relation_tuple,
                 operation=operation,
             )

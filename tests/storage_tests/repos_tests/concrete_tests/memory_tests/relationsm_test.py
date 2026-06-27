@@ -91,10 +91,11 @@ class TestInMemoryRelationRepository:
         delete = repo.write(WriteContext(TENANT), (TupleMutation.delete(t),))
 
         changes = list(repo.watch(TENANT, after=Revision(0)))
-        assert [change.revision for change in changes] == [
-            write.revision,
-            delete.revision,
+        assert [change.token for change in changes] == [
+            write.token,
+            delete.token,
         ]
+        assert [change.tenant for change in changes] == [TENANT, TENANT]
         assert [change.relation_tuple for change in changes] == [t, t]
 
     def test_tenants_have_isolated_tuple_state_and_revision_sequences(self) -> None:
@@ -150,15 +151,17 @@ class TestInMemoryRelationRepository:
         tenant_changes = list(repo.watch(TENANT, after=Revision(0)))
         other_changes = list(repo.watch(OTHER_TENANT, after=Revision(0)))
 
-        assert [change.revision for change in tenant_changes] == [
-            write.revision,
-            delete.revision,
+        assert [change.token for change in tenant_changes] == [
+            write.token,
+            delete.token,
         ]
+        assert [change.tenant for change in tenant_changes] == [TENANT, TENANT]
         assert [change.relation_tuple for change in tenant_changes] == [
             tenant_tuple,
             tenant_tuple,
         ]
-        assert [change.revision for change in other_changes] == [other_write.revision]
+        assert [change.token for change in other_changes] == [other_write.token]
+        assert [change.tenant for change in other_changes] == [OTHER_TENANT]
         assert [change.relation_tuple for change in other_changes] == [other_tuple]
 
     def test_invalid_mutation_rolls_back_partial_write(self) -> None:

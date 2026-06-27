@@ -140,11 +140,27 @@ class TupleMutation:
 
 @dataclass(frozen=True, slots=True)
 class RelationshipChange:
-    """One tuple change committed at a tenant revision."""
+    """One tuple change committed at a tenant-scoped revision token."""
 
-    revision: Revision
+    token: RevisionToken
     relation_tuple: RelationTuple
     operation: RelationshipOperation
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token, RevisionToken):
+            raise TypeError("relationship change token must be a RevisionToken")
+
+    @property
+    def tenant(self) -> TenantId:
+        """Return the tenant that owns the changed revision."""
+
+        return self.token.tenant
+
+    @property
+    def revision(self) -> Revision:
+        """Return the tenant-local revision for compatibility."""
+
+        return self.token.revision
 
 
 class Consistency:

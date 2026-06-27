@@ -214,5 +214,6 @@ class TestCachedRelationRepository:
 
         changes = list(repo.watch(TENANT, after=Revision(0)))
 
-        assert [change.revision for change in changes] == [write.revision]
+        assert [change.token for change in changes] == [write.token]
+        assert [change.tenant for change in changes] == [TENANT]
         assert [change.relation_tuple for change in changes] == [tuple_]

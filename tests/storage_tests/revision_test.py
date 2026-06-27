@@ -1,9 +1,12 @@
 import pytest
 
+from zanzipy.models import RelationTuple
 from zanzipy.storage.revision import (
     AtExactRevision,
     AtLeastAsFresh,
     FullyConsistent,
+    RelationshipChange,
+    RelationshipOperation,
     Revision,
     RevisionToken,
     TenantId,
@@ -23,6 +26,28 @@ def test_tenant_id_rejects_invalid_values() -> None:
         TenantId("")
     with pytest.raises(TypeError, match="str"):
         TenantId(123)  # type: ignore[arg-type]
+
+
+def test_relationship_change_carries_revision_token() -> None:
+    token = RevisionToken(TenantId("acme"), Revision(7))
+    tuple_ = RelationTuple.from_string("document:doc1#viewer@user:alice")
+
+    change = RelationshipChange(
+        token=token,
+        relation_tuple=tuple_,
+        operation=RelationshipOperation.WRITE,
+    )
+
+    assert change.token == token
+    assert change.tenant == token.tenant
+    assert change.revision == token.revision
+
+    with pytest.raises(TypeError, match="RevisionToken"):
+        RelationshipChange(  # type: ignore[arg-type]
+            token=token.revision,
+            relation_tuple=tuple_,
+            operation=RelationshipOperation.WRITE,
+        )
 
 
 def test_revision_for_consistency_resolves_head_and_freshness() -> None:

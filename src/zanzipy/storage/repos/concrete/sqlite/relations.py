@@ -267,7 +267,7 @@ class SQLiteRelationRepository(RelationRepository):
             (
                 int(row["change_revision"]),
                 RelationshipChange(
-                    revision=Revision(int(row["change_revision"])),
+                    token=RevisionToken(tenant, Revision(int(row["change_revision"]))),
                     relation_tuple=StoredRelationTuple.from_mapping(row).to_tuple(),
                     operation=RelationshipOperation.WRITE,
                 ),
@@ -278,7 +278,7 @@ class SQLiteRelationRepository(RelationRepository):
             (
                 int(row["change_revision"]),
                 RelationshipChange(
-                    revision=Revision(int(row["change_revision"])),
+                    token=RevisionToken(tenant, Revision(int(row["change_revision"]))),
                     relation_tuple=StoredRelationTuple.from_mapping(row).to_tuple(),
                     operation=RelationshipOperation.DELETE,
                 ),
