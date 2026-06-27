@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from zanzipy.engine._rewrite_dispatch import dispatch_rewrite_rule
+from zanzipy.engine._rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject, TupleFilter
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ class SubjectSet:
         )
 
 
-class ExpansionEngine:
+class ExpansionEngine(RewriteRuleDispatcher):
     """Expands a relation/permission into the set of subjects that grant it.
 
     Direct and union expansion preserve subject-set anchors. Intersection and
@@ -145,7 +145,7 @@ class ExpansionEngine:
     ) -> SubjectSet:
         """Evaluate one rewrite rule against the current object."""
 
-        return dispatch_rewrite_rule(
+        return self._dispatch_rewrite_rule(
             rewrite,
             direct=self._evaluate_direct_or_this_rule,
             this=self._evaluate_direct_or_this_rule,

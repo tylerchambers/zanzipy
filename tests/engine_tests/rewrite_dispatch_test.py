@@ -1,6 +1,6 @@
 import pytest
 
-from zanzipy.engine._rewrite_dispatch import dispatch_rewrite_rule
+from zanzipy.engine._rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
@@ -16,6 +16,10 @@ from zanzipy.schema.rules import (
 class UnknownRule(RewriteRule):
     def to_dict(self) -> dict:
         return {"type": "unknown"}
+
+
+class ConcreteRewriteRuleDispatcher(RewriteRuleDispatcher):
+    pass
 
 
 def _direct(_rewrite: DirectRule, *, marker: str) -> str:
@@ -61,12 +65,12 @@ def _exclusion(_rewrite: ExclusionRule, *, marker: str) -> str:
         ),
     ],
 )
-def test_dispatch_rewrite_rule_calls_matching_handler(
+def test_rewrite_rule_dispatcher_calls_matching_handler(
     rewrite: RewriteRule,
     expected: str,
 ) -> None:
     assert (
-        dispatch_rewrite_rule(
+        ConcreteRewriteRuleDispatcher()._dispatch_rewrite_rule(
             rewrite,
             direct=_direct,
             this=_this,
@@ -81,9 +85,9 @@ def test_dispatch_rewrite_rule_calls_matching_handler(
     )
 
 
-def test_dispatch_rewrite_rule_rejects_unknown_subclass() -> None:
+def test_rewrite_rule_dispatcher_rejects_unknown_subclass() -> None:
     with pytest.raises(TypeError, match="Unsupported rewrite rule type: UnknownRule"):
-        dispatch_rewrite_rule(
+        ConcreteRewriteRuleDispatcher()._dispatch_rewrite_rule(
             UnknownRule(),
             direct=_direct,
             this=_this,

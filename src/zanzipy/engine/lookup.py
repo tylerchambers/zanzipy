@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from zanzipy.engine._rewrite_dispatch import dispatch_rewrite_rule
+from zanzipy.engine._rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.engine.checker import CheckEngine
 from zanzipy.models import (
     CheckRequest,
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from zanzipy.storage.revision import ReadContext
 
 
-class LookupEngine:
+class LookupEngine(RewriteRuleDispatcher):
     """Evaluates reverse LookupResources traversals from a subject to objects."""
 
     def __init__(
@@ -178,7 +178,7 @@ class LookupEngine:
         *,
         resource_type: str,
     ) -> tuple[tuple[str, str], ...]:
-        return dispatch_rewrite_rule(
+        return self._dispatch_rewrite_rule(
             rewrite,
             direct=self._rewrite_relation_refs_leaf,
             this=self._rewrite_relation_refs_leaf,
@@ -330,7 +330,7 @@ class LookupEngine:
         current_relation: str,
         visited: set[tuple[str, str, str]],
     ) -> set[Obj]:
-        return dispatch_rewrite_rule(
+        return self._dispatch_rewrite_rule(
             rewrite,
             direct=self._evaluate_direct_or_this_rule,
             this=self._evaluate_direct_or_this_rule,
@@ -750,7 +750,7 @@ class LookupEngine:
         resource_type: str,
         cost: int,
     ) -> dict[tuple[tuple[str, str], str | None], int]:
-        return dispatch_rewrite_rule(
+        return self._dispatch_rewrite_rule(
             rewrite,
             direct=self._rewrite_dependencies_leaf,
             this=self._rewrite_dependencies_leaf,

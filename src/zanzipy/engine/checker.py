@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from zanzipy.engine._rewrite_dispatch import dispatch_rewrite_rule
+from zanzipy.engine._rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.models import (
     CheckRequest,
     CheckResponse,
@@ -35,7 +35,7 @@ class _Counters:
     max_depth_reached: int = 0
 
 
-class CheckEngine:
+class CheckEngine(RewriteRuleDispatcher):
     """Evaluates Zanzibar relation and permission checks at a repository revision.
 
     The engine resolves compiled rewrites, follows subject-set edges, short-circuits
@@ -171,7 +171,7 @@ class CheckEngine:
     ) -> bool:
         """Evaluate one rewrite rule against the current object."""
 
-        return dispatch_rewrite_rule(
+        return self._dispatch_rewrite_rule(
             rewrite,
             direct=self._evaluate_direct_or_this_rule,
             this=self._evaluate_direct_or_this_rule,
