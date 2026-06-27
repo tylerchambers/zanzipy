@@ -7,13 +7,14 @@ from zanzipy.schema.rules import RewriteRule
 from zanzipy.storage.cache.concrete.redis_rules import (
     DefaultRedisCompiledRuleCodec,
     RedisCompiledRuleCache,
+    RedisRuleClient,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
 
-class _FakeRedis:
+class _FakeRedis(RedisRuleClient):
     def __init__(self) -> None:
         self._data: dict[str, bytes] = {}
 

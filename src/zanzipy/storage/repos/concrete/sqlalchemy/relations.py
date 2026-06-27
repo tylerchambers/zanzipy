@@ -2,7 +2,7 @@
 
 from collections.abc import Callable  # noqa: TC003
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from zanzipy.storage.repos.abstract.relations import RelationRepository
 from zanzipy.storage.repos.concrete._rows import (
@@ -22,7 +22,8 @@ from zanzipy.storage.revision import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-    from sqlalchemy.engine import Engine
+    from sqlalchemy.engine import CursorResult, Engine
+    from sqlalchemy.orm import Session
 
     from zanzipy.models import RelationTuple, TupleFilter
 
@@ -33,7 +34,7 @@ _REVISIONS_TABLE_NAME = "revisions"
 class SQLAlchemyRelationRepository(RelationRepository):
     """SQLAlchemy repository using created/deleted revisions for tuple visibility."""
 
-    def __init__(self, session_factory: Callable[[], object]) -> None:
+    def __init__(self, session_factory: Callable[[], Session]) -> None:
         """Import SQLAlchemy and define relation table metadata.
 
         The supplied ``session_factory`` is called per operation; sessions are
@@ -328,7 +329,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
 
     def _active_tuple(
         self,
-        session: object,
+        session: Session,
         key: RelationTuple,
     ) -> RelationTuple | None:
         row = (
@@ -346,15 +347,18 @@ class SQLAlchemyRelationRepository(RelationRepository):
 
     def _ensure_write_revision(
         self,
-        session: object,
+        session: Session,
         revision: Revision | None,
     ) -> Revision:
         if revision is not None:
             return revision
-        result = session.execute(self._revisions.insert().values())
+        result = cast(
+            "CursorResult[object]",
+            session.execute(self._revisions.insert().values()),
+        )
         return Revision(int(result.inserted_primary_key[0]))
 
-    def _head_revision(self, session: object) -> Revision:
+    def _head_revision(self, session: Session) -> Revision:
         revision = self._revisions.c.revision
         value = session.execute(
             self._sa.select(self._sa.func.coalesce(self._sa.func.max(revision), 0))

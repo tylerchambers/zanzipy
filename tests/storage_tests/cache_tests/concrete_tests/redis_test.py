@@ -6,6 +6,7 @@ from zanzipy.storage.cache.concrete.redis import (
     RedisTupleCache,
     RedisTupleCodec,
 )
+from zanzipy.storage.common import RedisLike
 from zanzipy.storage.revision import Revision
 
 
@@ -43,7 +44,7 @@ class TestDefaultRedisTupleCodec:
         assert [str(t) for t in back] == [str(t) for t in tuples]
 
 
-class _FakeRedis:
+class _FakeRedis(RedisLike):
     def __init__(self) -> None:
         self._store: dict[str, bytes] = {}
         self.calls: list[tuple[str, tuple, dict]] = []
