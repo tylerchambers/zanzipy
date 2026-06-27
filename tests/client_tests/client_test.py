@@ -13,7 +13,9 @@ from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
-from zanzipy.storage.revision import Revision, WriteResult
+from zanzipy.storage.revision import ReadContext, Revision, TenantId, WriteResult
+
+DEFAULT_TENANT = TenantId("default")
 
 
 class TestZanzibarClient:
@@ -80,7 +82,7 @@ class TestZanzibarClient:
         assert isinstance(write, WriteResult)
         assert repo.get(
             RelationTuple.from_string("document:doc1#owner@user:alice"),
-            revision=write.revision,
+            context=ReadContext(DEFAULT_TENANT, write.revision),
         )
 
         assert client.check("document:doc1", "owner", "user:alice") is True
@@ -166,7 +168,17 @@ class TestZanzibarClient:
         ]
         with pytest.raises(ValueError, match="Subject not allowed by schema"):
             client.write_many(tuples)
-        assert list(repo.read(TupleFilter(), revision=repo.head_revision())) == []
+        assert (
+            list(
+                repo.read(
+                    TupleFilter(),
+                    context=ReadContext(
+                        DEFAULT_TENANT, repo.head_revision(DEFAULT_TENANT)
+                    ),
+                )
+            )
+            == []
+        )
 
         # All good -> both written
         client.write_many(
@@ -190,9 +202,15 @@ class TestZanzibarClient:
 
         assert delete.revision > write.revision
         assert second_delete.revision == delete.revision
-        assert repo.get(tuple_, revision=write.revision) == tuple_
-        assert repo.get(tuple_, revision=delete.revision) is None
-        assert repo.head_revision() == Revision(2)
+        assert (
+            repo.get(tuple_, context=ReadContext(DEFAULT_TENANT, write.revision))
+            == tuple_
+        )
+        assert (
+            repo.get(tuple_, context=ReadContext(DEFAULT_TENANT, delete.revision))
+            is None
+        )
+        assert repo.head_revision(DEFAULT_TENANT) == Revision(2)
 
     def test_check_rejects_subject_sets(self) -> None:
         registry = self._base_registry()
@@ -323,6 +341,108 @@ class TestZanzibarClient:
         client2 = ZanzibarClient(relations_repository=repo, schema=reg2)
         assert client2.check("document:d1", "can_view", "user:alice") is True
         assert client2.check("document:d1", "can_view", "user:bob") is False
+
+    def test_group_userset_traversal_is_tenant_scoped(self) -> None:
+        registry = SchemaRegistry()
+        registry.register_many(
+            [
+                NamespaceDef(
+                    name="group",
+                    relations=(
+                        RelationDef.with_subjects(
+                            "member",
+                            (SubjectReference.from_dict({"namespace": "user"}),),
+                        ),
+                    ),
+                ),
+                NamespaceDef(
+                    name="document",
+                    relations=(
+                        RelationDef.with_subjects(
+                            "viewer",
+                            (
+                                SubjectReference.from_dict({"namespace": "user"}),
+                                SubjectReference.from_dict(
+                                    {"namespace": "group", "relation": "member"}
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ]
+        )
+        repo = InMemoryRelationRepository()
+        alpha = ZanzibarClient(
+            relations_repository=repo,
+            schema=registry,
+            tenant=TenantId("alpha"),
+        )
+        beta = ZanzibarClient(
+            relations_repository=repo,
+            schema=registry,
+            tenant=TenantId("beta"),
+        )
+
+        alpha.write("document:doc", "viewer", "group:eng#member")
+        beta.write("group:eng", "member", "user:alice")
+
+        assert alpha.check("document:doc", "viewer", "user:alice") is False
+
+        alpha.write("group:eng", "member", "user:alice")
+        assert alpha.check("document:doc", "viewer", "user:alice") is True
+
+    def test_tuple_to_userset_traversal_is_tenant_scoped(self) -> None:
+        registry = SchemaRegistry()
+        registry.register_many(
+            [
+                NamespaceDef(
+                    name="folder",
+                    relations=(
+                        RelationDef.with_subjects(
+                            "viewer",
+                            (SubjectReference.from_dict({"namespace": "user"}),),
+                        ),
+                    ),
+                ),
+                NamespaceDef(
+                    name="document",
+                    relations=(
+                        RelationDef.with_subjects(
+                            "parent",
+                            (SubjectReference.from_dict({"namespace": "folder"}),),
+                        ),
+                    ),
+                    permissions=(
+                        PermissionDef(
+                            name="can_view",
+                            rewrite=TupleToUsersetRule(
+                                tuple_relation="parent",
+                                computed_relation="viewer",
+                            ),
+                        ),
+                    ),
+                ),
+            ]
+        )
+        repo = InMemoryRelationRepository()
+        alpha = ZanzibarClient(
+            relations_repository=repo,
+            schema=registry,
+            tenant=TenantId("alpha"),
+        )
+        beta = ZanzibarClient(
+            relations_repository=repo,
+            schema=registry,
+            tenant=TenantId("beta"),
+        )
+
+        alpha.write("document:doc", "parent", "folder:root")
+        beta.write("folder:root", "viewer", "user:alice")
+
+        assert alpha.check("document:doc", "can_view", "user:alice") is False
+
+        alpha.write("folder:root", "viewer", "user:alice")
+        assert alpha.check("document:doc", "can_view", "user:alice") is True
 
     def test_expand_subject_sets_and_users(self) -> None:
         registry = self._base_registry()

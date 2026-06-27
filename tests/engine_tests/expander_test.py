@@ -20,7 +20,13 @@ from zanzipy.schema.types import SchemaDefinitionType
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
-from zanzipy.storage.revision import TupleMutation
+from zanzipy.storage.revision import ReadContext, TenantId, TupleMutation, WriteContext
+
+DEFAULT_TENANT = TenantId("default")
+
+
+def _context(repo: InMemoryRelationRepository) -> ReadContext:
+    return ReadContext(DEFAULT_TENANT, repo.head_revision(DEFAULT_TENANT))
 
 
 class TestExpansionEngine:
@@ -55,32 +61,35 @@ class TestExpansionEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#owner@user:alice")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#owner@user:bob")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#owner@group:eng#member")
                 ),
-            )
+            ),
         )
 
         engine = ExpansionEngine(
             relations_repository=repo,
             schema=registry,
         )
-        sset = engine.expand("document", "doc", "owner")
+        sset = engine.expand("document", "doc", "owner", context=_context(repo))
         assert sset.users == {"user:alice", "user:bob"}
         assert sset.usersets == {"group:eng#member"}
 
@@ -134,32 +143,36 @@ class TestExpansionEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:d#owner@user:alice")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:d#editor@user:carol")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:d#viewer@user:bob")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:d#banned@user:carol")
                 ),
-            )
+            ),
         )
 
         engine = ExpansionEngine(
@@ -168,15 +181,19 @@ class TestExpansionEngine:
         )
 
         # union
-        s_union = engine.expand("document", "d", "view_union")
+        s_union = engine.expand("document", "d", "view_union", context=_context(repo))
         assert s_union.users == {"user:alice", "user:carol"}
 
         # intersection (should be empty)
-        s_inter = engine.expand("document", "d", "edit_intersection")
+        s_inter = engine.expand(
+            "document", "d", "edit_intersection", context=_context(repo)
+        )
         assert s_inter.users == set()
 
         # exclusion (bob viewer but carol banned)
-        s_ex = engine.expand("document", "d", "comment_exclusion")
+        s_ex = engine.expand(
+            "document", "d", "comment_exclusion", context=_context(repo)
+        )
         assert s_ex.users == {"user:bob"}
 
     def test_reused_relation_operand_is_path_local(self) -> None:
@@ -212,20 +229,25 @@ class TestExpansionEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#owner@user:alice")
                 ),
-            )
+            ),
         )
 
         engine = ExpansionEngine(relations_repository=repo, schema=registry)
 
-        owner_twice = engine.expand("document", "doc", "owner_twice")
+        owner_twice = engine.expand(
+            "document", "doc", "owner_twice", context=_context(repo)
+        )
         assert owner_twice.users == {"user:alice"}
         assert owner_twice.usersets == set()
 
-        owner_minus_owner = engine.expand("document", "doc", "owner_minus_owner")
+        owner_minus_owner = engine.expand(
+            "document", "doc", "owner_minus_owner", context=_context(repo)
+        )
         assert owner_minus_owner.users == set()
         assert owner_minus_owner.usersets == set()
 
@@ -284,49 +306,56 @@ class TestExpansionEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("group:eng#member@user:alice")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("group:eng#member@user:bob")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#owner@user:alice")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#viewer@group:eng#member")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#banned@user:alice")
                 ),
-            )
+            ),
         )
 
         engine = ExpansionEngine(relations_repository=repo, schema=registry)
 
-        owner_and_viewer = engine.expand("document", "doc", "owner_and_viewer")
+        owner_and_viewer = engine.expand(
+            "document", "doc", "owner_and_viewer", context=_context(repo)
+        )
         assert owner_and_viewer.users == {"user:alice"}
         assert owner_and_viewer.usersets == set()
 
         viewer_without_banned = engine.expand(
-            "document", "doc", "viewer_without_banned"
+            "document", "doc", "viewer_without_banned", context=_context(repo)
         )
         assert viewer_without_banned.users == {"user:bob"}
         assert viewer_without_banned.usersets == set()
@@ -365,25 +394,27 @@ class TestExpansionEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("document:doc#parent@folder:f1")
                 ),
-            )
+            ),
         )
         repo.write(
+            WriteContext(DEFAULT_TENANT),
             (
                 TupleMutation.touch(
                     RelationTuple.from_string("folder:f1#viewer@user:alice")
                 ),
-            )
+            ),
         )
 
         engine = ExpansionEngine(
             relations_repository=repo,
             schema=registry,
         )
-        sset = engine.expand("document", "doc", "can_view")
+        sset = engine.expand("document", "doc", "can_view", context=_context(repo))
         assert sset.users == {"user:alice"}
 
     def test_exceptions_and_validation(self, monkeypatch) -> None:
@@ -407,11 +438,11 @@ class TestExpansionEngine:
         from zanzipy.models.errors import IdentifierValidationError
 
         with pytest.raises(IdentifierValidationError):
-            engine.expand("bad ns", "x", "viewer")
+            engine.expand("bad ns", "x", "viewer", context=_context(repo))
 
         # Unknown relation in known namespace -> ValueError from registry
         with pytest.raises(ValueError, match="Unknown relation or permission"):
-            engine.expand("document", "doc", "missing")
+            engine.expand("document", "doc", "missing", context=_context(repo))
 
         # Permission missing rewrite -> ValueError("Permission has no rewrite")
         def _fake_get_def(self, object_type: str, relation: str) -> dict:  # type: ignore[override]
@@ -429,7 +460,7 @@ class TestExpansionEngine:
         )
 
         with pytest.raises(ValueError, match="Permission has no rewrite"):
-            engine.expand("document", "doc", "perm")
+            engine.expand("document", "doc", "perm", context=_context(repo))
 
         # Unknown definition type -> ValueError("Unknown definition type")
         def _fake_get_def2(self, object_type: str, relation: str) -> dict:  # type: ignore[override]
@@ -443,7 +474,7 @@ class TestExpansionEngine:
         )
 
         with pytest.raises(ValueError, match="Unknown definition type"):
-            engine.expand("document", "doc", "weird")
+            engine.expand("document", "doc", "weird", context=_context(repo))
 
     def test_compiled_cache_is_used_and_populated(self) -> None:
         registry = SchemaRegistry()
@@ -495,7 +526,7 @@ class TestExpansionEngine:
         )
 
         # First call: cache miss -> set occurs with a RewriteRule
-        engine.expand("doc", "d1", "view")
+        engine.expand("doc", "d1", "view", context=_context(repo))
         assert cache.get_calls[0] == ("doc", "view")
         ns_name, rel_name, compiled = cache.set_calls[0]
         assert (ns_name, rel_name) == ("doc", "view")
@@ -513,7 +544,7 @@ class TestExpansionEngine:
 
         # Second call: should hit cache and not call set again
         before_sets = len(cache.set_calls)
-        engine.expand("doc", "d2", "view")
+        engine.expand("doc", "d2", "view", context=_context(repo))
         assert len(cache.set_calls) == before_sets
 
     def test_compiled_cache_refreshes_after_schema_update(self) -> None:
@@ -536,7 +567,12 @@ class TestExpansionEngine:
 
         repo = InMemoryRelationRepository()
         repo.write(
-            (TupleMutation.touch(RelationTuple.from_string("doc:1#viewer@user:alice")),)
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("doc:1#viewer@user:alice")
+                ),
+            ),
         )
 
         from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
@@ -568,7 +604,7 @@ class TestExpansionEngine:
             compiled_rules_cache=cache,
         )
 
-        initial = engine.expand("doc", "1", "view")
+        initial = engine.expand("doc", "1", "view", context=_context(repo))
         assert initial.users == {"user:alice"}
 
         registry.update_namespace(
@@ -581,7 +617,7 @@ class TestExpansionEngine:
             )
         )
 
-        refreshed = engine.expand("doc", "1", "view")
+        refreshed = engine.expand("doc", "1", "view", context=_context(repo))
         assert refreshed.users == set()
         view_sets = [call for call in cache.set_calls if call[:2] == ("doc", "view")]
         assert len(view_sets) == 2
@@ -636,11 +672,12 @@ class TestSubjectSetOps:
         )
         registry.register(ns)
 
+        repo = InMemoryRelationRepository()
         engine = ExpansionEngine(
-            relations_repository=InMemoryRelationRepository(),
+            relations_repository=repo,
             schema=registry,
             max_depth=3,
         )
-        sset = engine.expand("doc", "d1", "x")
+        sset = engine.expand("doc", "d1", "x", context=_context(repo))
         assert sset.users == set()
         assert sset.usersets == set()

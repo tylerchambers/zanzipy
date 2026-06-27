@@ -12,6 +12,7 @@ pip install zanzipy
 from zanzipy.dsl.builder import SchemaBuilder
 from zanzipy.client import ZanzibarClient
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
+from zanzipy.storage.revision import TenantId
 
 # Define schema with the fluent DSL
 registry = (
@@ -24,8 +25,12 @@ registry = (
         .build()
 )
 
-# Use the revisioned in-memory repo for a zero-dependency start.
-client = ZanzibarClient(schema=registry, relations_repository=InMemoryRelationRepository())
+# Use the tenant-scoped, revisioned in-memory repo for a zero-dependency start.
+client = ZanzibarClient(
+    schema=registry,
+    relations_repository=InMemoryRelationRepository(),
+    tenant=TenantId("default"),
+)
 
 write = client.write("document:readme", "owner", "user:alice")
 assert client.check("document:readme", "can_view", "user:alice")
@@ -37,7 +42,7 @@ assert client.check_at_revision(
 )
 ```
 
-That’s it. All zanzipy relation storage is revisioned. Public convenience APIs use the repository head revision by default; explicit revision APIs are available for snapshot checks. Add more relations/permissions with the DSL, and swap the repository when you’re ready to plug in durable storage.
+That’s it. All zanzipy relation storage is tenant-scoped and revisioned. `RelationTuple` stays tenant-free: a tuple is the logical authorization fact (`object#relation@subject`), while `TenantId` is part of read/write/evaluation context. The same logical tuple may exist independently in multiple tenants. Public convenience APIs use the client’s configured tenant and repository head revision by default; explicit revision APIs are available for snapshot checks. Add more relations/permissions with the DSL, and swap the repository when you’re ready to plug in durable storage.
 
 ### Quick start with mixins 🧩
 
@@ -52,6 +57,7 @@ from zanzipy.dsl.builder import SchemaBuilder
 from zanzipy.engine_integration import ZanzibarEngine, configure_authorization
 from zanzipy.integration.mixins import AuthorizableResource, AuthorizableSubject
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
+from zanzipy.storage.revision import TenantId
 
 # Define a minimal schema (user + document)
 registry = (
@@ -64,8 +70,12 @@ registry = (
         .build()
 )
 
-# Wire up the engine used by the mixins
-client = ZanzibarClient(schema=registry, relations_repository=InMemoryRelationRepository())
+# Wire up the engine used by the mixins.
+client = ZanzibarClient(
+    schema=registry,
+    relations_repository=InMemoryRelationRepository(),
+    tenant=TenantId("default"),
+)
 configure_authorization(ZanzibarEngine(client))
 
 # Domain models using mixins
@@ -100,9 +110,9 @@ For a fuller mixins setup with groups, SQLAlchemy models, and caching, see `exam
 - 🔗 Zanzibar semantics: relations, permissions, union/intersection/exclusion, tuple‑to‑userset.
 - ✅ Correctness‑first evaluation: cycle detection, max‑depth limits, and subject expansion.
 - 🧩 Simple client API: `write`, `delete`, `check`, `list_objects`, `expand`.
-- Revisioned storage: writes return `WriteResult`; snapshot reads use `Revision`.
-- 🗄️ Storage-agnostic: implement revisioned `RelationRepository`; start with in-memory.
-- ⚡ Optional revision-aware tuple cache and compiled rule cache for hot paths.
+- Tenant-scoped revisioned storage: writes return `WriteResult` with a tenant-scoped revision token; snapshot reads use `Revision`.
+- 🗄️ Storage-agnostic: implement tenant-scoped `RelationRepository`; start with in-memory.
+- ⚡ Optional tenant/revision-aware tuple cache and compiled rule cache for hot paths.
 
 ### When should you use zanzipy? 🤔
 - You want ReBAC embedded in your Python app without running another service.

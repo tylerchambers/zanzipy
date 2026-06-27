@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 SUBJECT_RELATION_NONE = ""
 
 LOGICAL_RELATION_TUPLE_COLUMNS = (
+    "tenant_id",
     "tuple_key",
     "object_ns",
     "object_id",
@@ -41,6 +42,7 @@ _FILTER_COLUMNS = (
 class StoredRelationTuple:
     """Database representation of a relation tuple and its visibility window."""
 
+    tenant_id: str
     tuple_key: str
     object_ns: str
     object_id: str
@@ -56,11 +58,13 @@ class StoredRelationTuple:
         cls,
         tuple_: RelationTuple,
         *,
+        tenant_id: str,
         created_revision: int | None = None,
         deleted_revision: int | None = None,
     ) -> StoredRelationTuple:
         """Build a storage row for ``tuple_`` with optional visibility bounds."""
         return cls(
+            tenant_id=tenant_id,
             tuple_key=str(tuple_),
             object_ns=str(tuple_.object.namespace),
             object_id=str(tuple_.object.id),
@@ -81,6 +85,7 @@ class StoredRelationTuple:
         """Build a storage row from SQL-style column mappings."""
         subject_rel = row["subject_rel"]
         return cls(
+            tenant_id=str(row["tenant_id"]),
             tuple_key=str(row["tuple_key"]),
             object_ns=str(row["object_ns"]),
             object_id=str(row["object_id"]),
@@ -98,6 +103,7 @@ class StoredRelationTuple:
         """Return column values suitable for SQL parameter binding."""
 
         return {
+            "tenant_id": self.tenant_id,
             "tuple_key": self.tuple_key,
             "object_ns": self.object_ns,
             "object_id": self.object_id,
@@ -126,24 +132,30 @@ class StoredRelationTuple:
 def stored_tuple_values(
     tuple_: RelationTuple,
     *,
+    tenant_id: str,
     created_revision: int,
     deleted_revision: int | None = None,
 ) -> dict[str, str | int | None]:
-    """Return storage values for ``tuple_`` at its visibility window."""
+    """Return storage values for ``tuple_`` at its tenant visibility window."""
 
     return StoredRelationTuple.from_tuple(
         tuple_,
+        tenant_id=tenant_id,
         created_revision=created_revision,
         deleted_revision=deleted_revision,
     ).as_values()
 
 
-def unique_stored_tuples(tuples: Iterable[RelationTuple]) -> list[StoredRelationTuple]:
+def unique_stored_tuples(
+    tuples: Iterable[RelationTuple],
+    *,
+    tenant_id: str,
+) -> list[StoredRelationTuple]:
     """Return stored rows de-duplicated by canonical tuple key in input order."""
 
     rows: dict[str, StoredRelationTuple] = {}
     for tuple_ in tuples:
-        row = StoredRelationTuple.from_tuple(tuple_)
+        row = StoredRelationTuple.from_tuple(tuple_, tenant_id=tenant_id)
         rows.setdefault(row.tuple_key, row)
     return list(rows.values())
 

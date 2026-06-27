@@ -1,4 +1,4 @@
-"""SQLite-backed revisioned relation tuple repository."""
+"""SQLite-backed tenant-scoped revisioned relation tuple repository."""
 
 from contextlib import suppress
 import sqlite3
@@ -12,10 +12,14 @@ from zanzipy.storage.repos.concrete._rows import (
     stored_tuple_values,
 )
 from zanzipy.storage.revision import (
+    ReadContext,
     RelationshipChange,
     RelationshipOperation,
     Revision,
+    RevisionToken,
+    TenantId,
     TupleMutation,
+    WriteContext,
     WriteResult,
 )
 
@@ -28,12 +32,14 @@ _SELECT_COLUMNS = ", ".join(RELATION_TUPLE_COLUMNS)
 _INSERT_COLUMNS = ", ".join(RELATION_TUPLE_COLUMNS)
 _INSERT_PLACEHOLDERS = ", ".join(f":{column}" for column in RELATION_TUPLE_COLUMNS)
 _VISIBLE_AT = (
-    "created_revision <= ? AND (deleted_revision IS NULL OR deleted_revision > ?)"
+    "tenant_id = ? "
+    "AND created_revision <= ? "
+    "AND (deleted_revision IS NULL OR deleted_revision > ?)"
 )
 
 
 class SQLiteRelationRepository(RelationRepository):
-    """SQLite repository using created/deleted revisions for tuple visibility."""
+    """SQLite repository using tenant-scoped created/deleted revisions."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
         """Open the database, enable SQLite storage pragmas, and create schema."""
@@ -49,14 +55,17 @@ class SQLiteRelationRepository(RelationRepository):
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS revisions (
-                    revision INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    tenant_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (tenant_id, revision)
                 );
                 """
             )
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS relation_tuples (
+                    tenant_id TEXT NOT NULL,
                     tuple_key TEXT NOT NULL,
                     object_ns TEXT NOT NULL,
                     object_id TEXT NOT NULL,
@@ -66,16 +75,26 @@ class SQLiteRelationRepository(RelationRepository):
                     subject_rel TEXT NOT NULL,
                     created_revision INTEGER NOT NULL,
                     deleted_revision INTEGER NULL,
-                    PRIMARY KEY (tuple_key, created_revision),
-                    FOREIGN KEY (created_revision) REFERENCES revisions(revision),
-                    FOREIGN KEY (deleted_revision) REFERENCES revisions(revision)
+                    PRIMARY KEY (tenant_id, tuple_key, created_revision),
+                    FOREIGN KEY (tenant_id, created_revision)
+                        REFERENCES revisions(tenant_id, revision),
+                    FOREIGN KEY (tenant_id, deleted_revision)
+                        REFERENCES revisions(tenant_id, revision)
                 );
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_rt_active_unique
+                ON relation_tuples (tenant_id, tuple_key)
+                WHERE deleted_revision IS NULL;
                 """
             )
             self._conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_rt_forward
                 ON relation_tuples (
+                    tenant_id,
                     object_ns,
                     object_id,
                     relation,
@@ -88,6 +107,7 @@ class SQLiteRelationRepository(RelationRepository):
                 """
                 CREATE INDEX IF NOT EXISTS idx_rt_reverse
                 ON relation_tuples (
+                    tenant_id,
                     subject_ns,
                     subject_id,
                     subject_rel,
@@ -98,54 +118,56 @@ class SQLiteRelationRepository(RelationRepository):
             )
             self._conn.execute(
                 """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_rt_active_unique
-                ON relation_tuples (tuple_key)
-                WHERE deleted_revision IS NULL;
-                """
-            )
-            self._conn.execute(
-                """
                 CREATE INDEX IF NOT EXISTS idx_rt_object_type_relation
-                ON relation_tuples (object_ns, relation, object_id);
+                ON relation_tuples (tenant_id, object_ns, relation, object_id);
                 """
             )
 
-    def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
-        """Persist idempotent mutations atomically in one revision transaction.
+    def write(
+        self,
+        context: WriteContext,
+        mutations: Iterable[TupleMutation],
+    ) -> WriteResult:
+        """Persist idempotent tenant mutations atomically in one revision.
 
         Raises:
             ValueError: If a mutation contains an unknown operation.
         """
         revision: Revision | None = None
-        changes: list[tuple[RelationTuple, RelationshipOperation]] = []
         with self._conn:
             for mutation in mutations:
                 if mutation.operation is RelationshipOperation.WRITE:
-                    if self._active_tuple(mutation.relation_tuple) is not None:
+                    if self._active_tuple(context.tenant, mutation.relation_tuple):
                         continue
-                    revision = self._ensure_write_revision(revision)
-                    self._insert_tuple(mutation.relation_tuple, revision)
-                    changes.append((mutation.relation_tuple, mutation.operation))
+                    revision = self._ensure_write_revision(context.tenant, revision)
+                    self._insert_tuple(
+                        context.tenant, mutation.relation_tuple, revision
+                    )
                     continue
 
                 if mutation.operation is RelationshipOperation.DELETE:
-                    active = self._active_tuple(mutation.relation_tuple)
+                    active = self._active_tuple(context.tenant, mutation.relation_tuple)
                     if active is None:
                         continue
-                    revision = self._ensure_write_revision(revision)
-                    self._mark_tuple_deleted(mutation.relation_tuple, revision)
-                    changes.append((active, mutation.operation))
+                    revision = self._ensure_write_revision(context.tenant, revision)
+                    self._mark_tuple_deleted(
+                        context.tenant,
+                        mutation.relation_tuple,
+                        revision,
+                    )
                     continue
 
                 raise ValueError(
                     f"unknown tuple mutation operation: {mutation.operation}"
                 )
-        return WriteResult(self.head_revision() if revision is None else revision)
+        committed = self.head_revision(context.tenant) if revision is None else revision
+        return WriteResult(RevisionToken(context.tenant, committed))
 
-    def head_revision(self) -> Revision:
-        """Return the greatest committed revision stored in SQLite."""
+    def head_revision(self, tenant: TenantId) -> Revision:
+        """Return the greatest committed revision stored for ``tenant``."""
         value = self._conn.execute(
-            "SELECT COALESCE(MAX(revision), 0) FROM revisions"
+            "SELECT COALESCE(MAX(revision), 0) FROM revisions WHERE tenant_id = ?",
+            (str(tenant),),
         ).fetchone()[0]
         return Revision(int(value))
 
@@ -153,21 +175,26 @@ class SQLiteRelationRepository(RelationRepository):
         self,
         key: RelationTuple,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> RelationTuple | None:
-        """Return ``key`` when its visibility window includes ``revision``.
+        """Return ``key`` when its tenant visibility window includes context.
 
         Raises:
-            ValueError: If ``revision`` is newer than the head revision.
+            ValueError: If ``context.revision`` is newer than the tenant head.
         """
-        self._raise_if_future_revision(revision)
+        self._raise_if_future_revision(context)
         row = self._conn.execute(
             f"""
             SELECT {_SELECT_COLUMNS}
             FROM relation_tuples
             WHERE tuple_key = ? AND {_VISIBLE_AT}
             """,
-            (str(key), revision.value, revision.value),
+            (
+                str(key),
+                str(context.tenant),
+                context.revision.value,
+                context.revision.value,
+            ),
         ).fetchone()
         if row is None:
             return None
@@ -177,50 +204,58 @@ class SQLiteRelationRepository(RelationRepository):
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return tuples visible at ``revision`` that match ``filter``.
+        """Return tuples visible in ``context`` that match ``filter``.
 
         Raises:
-            ValueError: If ``revision`` is newer than the head revision.
+            ValueError: If ``context.revision`` is newer than the tenant head.
         """
-        return self._select(filter, revision=revision)
+        return self._select(filter, context=context)
 
     def read_reverse(
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
-        """Return reverse-filtered tuples visible at ``revision``.
+        """Return reverse-filtered tuples visible in ``context``.
 
         Raises:
-            ValueError: If ``revision`` is newer than the head revision.
+            ValueError: If ``context.revision`` is newer than the tenant head.
         """
-        return self._select(filter, revision=revision)
+        return self._select(filter, context=context)
 
-    def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
-        """Yield writes and deletes committed after ``after`` by revision order.
+    def watch(
+        self,
+        tenant: TenantId,
+        *,
+        after: Revision,
+    ) -> Iterator[RelationshipChange]:
+        """Yield ``tenant`` writes and deletes committed after ``after``.
 
         Raises:
-            ValueError: If ``after`` is newer than the head revision.
+            ValueError: If ``after`` is newer than the tenant head revision.
         """
-        self._raise_if_future_revision(after)
+        self._raise_if_future_revision(ReadContext(tenant, after))
+        tenant_id = str(tenant)
         created = self._conn.execute(
             f"""
             SELECT {_SELECT_COLUMNS}, created_revision AS change_revision
             FROM relation_tuples
-            WHERE created_revision > ?
+            WHERE tenant_id = ? AND created_revision > ?
             """,
-            (after.value,),
+            (tenant_id, after.value),
         ).fetchall()
         deleted = self._conn.execute(
             f"""
             SELECT {_SELECT_COLUMNS}, deleted_revision AS change_revision
             FROM relation_tuples
-            WHERE deleted_revision IS NOT NULL AND deleted_revision > ?
+            WHERE tenant_id = ?
+              AND deleted_revision IS NOT NULL
+              AND deleted_revision > ?
             """,
-            (after.value,),
+            (tenant_id, after.value),
         ).fetchall()
         changes = [
             (
@@ -249,9 +284,18 @@ class SQLiteRelationRepository(RelationRepository):
 
     def info(self) -> dict[str, object]:
         """Return SQLite backend diagnostics and stored row column names."""
+        rows = self._conn.execute(
+            """
+            SELECT tenant_id, MAX(revision) AS revision
+            FROM revisions
+            GROUP BY tenant_id
+            """
+        ).fetchall()
         return {
             "backend": "sqlite",
-            "head_revision": self.head_revision().value,
+            "head_revisions": {
+                str(row["tenant_id"]): int(row["revision"]) for row in rows
+            },
             "columns": RELATION_TUPLE_COLUMNS,
         }
 
@@ -264,11 +308,15 @@ class SQLiteRelationRepository(RelationRepository):
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> list[RelationTuple]:
-        self._raise_if_future_revision(revision)
+        self._raise_if_future_revision(context)
         clauses = [_VISIBLE_AT]
-        params: list[str | int] = [revision.value, revision.value]
+        params: list[str | int] = [
+            str(context.tenant),
+            context.revision.value,
+            context.revision.value,
+        ]
         for column, value in filter_values(filter):
             clauses.append(f"{column} = ?")
             params.append(value)
@@ -284,36 +332,68 @@ class SQLiteRelationRepository(RelationRepository):
         )
         return [StoredRelationTuple.from_mapping(row).to_tuple() for row in cursor]
 
-    def _active_tuple(self, relation_tuple: RelationTuple) -> RelationTuple | None:
+    def _active_tuple(
+        self,
+        tenant: TenantId,
+        relation_tuple: RelationTuple,
+    ) -> RelationTuple | None:
         row = self._conn.execute(
             f"""
             SELECT {_SELECT_COLUMNS}
             FROM relation_tuples
-            WHERE tuple_key = ? AND deleted_revision IS NULL
+            WHERE tenant_id = ? AND tuple_key = ? AND deleted_revision IS NULL
             """,
-            (str(relation_tuple),),
+            (str(tenant), str(relation_tuple)),
         ).fetchone()
         if row is None:
             return None
         return StoredRelationTuple.from_mapping(row).to_tuple()
 
-    def _ensure_write_revision(self, revision: Revision | None) -> Revision:
+    def _ensure_write_revision(
+        self,
+        tenant: TenantId,
+        revision: Revision | None,
+    ) -> Revision:
         if revision is not None:
             return revision
-        cursor = self._conn.execute("INSERT INTO revisions DEFAULT VALUES")
-        return Revision(int(cursor.lastrowid))
+        tenant_id = str(tenant)
+        next_revision = int(
+            self._conn.execute(
+                """
+                SELECT COALESCE(MAX(revision), 0) + 1
+                FROM revisions
+                WHERE tenant_id = ?
+                """,
+                (tenant_id,),
+            ).fetchone()[0]
+        )
+        self._conn.execute(
+            "INSERT INTO revisions (tenant_id, revision) VALUES (?, ?)",
+            (tenant_id, next_revision),
+        )
+        return Revision(next_revision)
 
-    def _insert_tuple(self, relation_tuple: RelationTuple, revision: Revision) -> None:
+    def _insert_tuple(
+        self,
+        tenant: TenantId,
+        relation_tuple: RelationTuple,
+        revision: Revision,
+    ) -> None:
         self._conn.execute(
             f"""
             INSERT INTO relation_tuples ({_INSERT_COLUMNS})
             VALUES ({_INSERT_PLACEHOLDERS})
             """,
-            stored_tuple_values(relation_tuple, created_revision=revision.value),
+            stored_tuple_values(
+                relation_tuple,
+                tenant_id=str(tenant),
+                created_revision=revision.value,
+            ),
         )
 
     def _mark_tuple_deleted(
         self,
+        tenant: TenantId,
         relation_tuple: RelationTuple,
         revision: Revision,
     ) -> None:
@@ -321,12 +401,14 @@ class SQLiteRelationRepository(RelationRepository):
             """
             UPDATE relation_tuples
             SET deleted_revision = ?
-            WHERE tuple_key = ? AND deleted_revision IS NULL
+            WHERE tenant_id = ? AND tuple_key = ? AND deleted_revision IS NULL
             """,
-            (revision.value, str(relation_tuple)),
+            (revision.value, str(tenant), str(relation_tuple)),
         )
 
-    def _raise_if_future_revision(self, revision: Revision) -> None:
-        head = self.head_revision()
-        if revision > head:
-            raise ValueError(f"requested revision {revision} is newer than head {head}")
+    def _raise_if_future_revision(self, context: ReadContext) -> None:
+        head = self.head_revision(context.tenant)
+        if context.revision > head:
+            raise ValueError(
+                f"requested revision {context.revision} is newer than head {head}"
+            )

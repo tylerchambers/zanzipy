@@ -14,8 +14,12 @@ from .models import (
 from .schema.relations import RelationDef
 from .storage.revision import (
     Consistency,
+    ReadContext,
     Revision,
+    RevisionToken,
+    TenantId,
     TupleMutation,
+    WriteContext,
     WriteResult,
     revision_for_consistency,
 )
@@ -28,14 +32,16 @@ if TYPE_CHECKING:
     from .storage.cache.abstract.tuples import TupleCache
     from .storage.repos.abstract.relations import RelationRepository
 
+_DEFAULT_TENANT = TenantId("default")
+
 
 class ZanzibarClient:
     """
     High-level, pythonic API over Zanzibar-style authorization primitives.
 
-    All relation storage is revisioned. Convenience read APIs resolve to the
-    repository head revision by default; explicit revision APIs evaluate at the
-    supplied snapshot revision.
+    All relation storage is tenant-scoped and revisioned. Convenience read APIs
+    resolve to the configured tenant's repository head revision by default;
+    explicit revision APIs evaluate at the supplied tenant snapshot revision.
     """
 
     def __init__(
@@ -43,12 +49,13 @@ class ZanzibarClient:
         *,
         relations_repository: RelationRepository,
         schema: SchemaRegistry,
+        tenant: TenantId | str = _DEFAULT_TENANT,
         check_engine: CheckEngine | None = None,
         enable_debug: bool = False,
         max_check_depth: int = 25,
         tuple_cache: TupleCache | None = None,
     ) -> None:
-        """Create a client over a schema and revisioned relation repository.
+        """Create a tenant-scoped client over a schema and relation repository.
 
         Passing ``tuple_cache`` wraps the repository with cache-aware reads and
         write invalidation. Pass ``check_engine`` only when reusing a custom
@@ -67,6 +74,7 @@ class ZanzibarClient:
 
         self.relations_repository = relations_repository
         self.schema = schema
+        self.tenant = tenant if isinstance(tenant, TenantId) else TenantId(tenant)
         self.enable_debug = enable_debug
         self.max_check_depth = max_check_depth
 
@@ -87,27 +95,33 @@ class ZanzibarClient:
         )
 
     def write(self, object: str, relation: str, subject: str) -> WriteResult:
-        """Grant a relation tuple and return the committed revision."""
+        """Grant a relation tuple in this client's tenant."""
 
         rt = RelationTuple.from_strings(object, relation, subject)
         self._validate_tuple_against_schema(rt)
-        return self.relations_repository.write((TupleMutation.touch(rt),))
+        return self.relations_repository.write(
+            self._write_context(),
+            (TupleMutation.touch(rt),),
+        )
 
     def write_many(self, tuples: Sequence[tuple[str, str, str]]) -> WriteResult:
-        """Grant multiple relation tuples in a single repository commit."""
+        """Grant multiple relation tuples in one tenant repository commit."""
 
         mutations: list[TupleMutation] = []
         for obj, rel, subj in tuples:
             rt = RelationTuple.from_strings(obj, rel, subj)
             self._validate_tuple_against_schema(rt)
             mutations.append(TupleMutation.touch(rt))
-        return self.relations_repository.write(mutations)
+        return self.relations_repository.write(self._write_context(), mutations)
 
     def delete(self, object: str, relation: str, subject: str) -> WriteResult:
-        """Revoke a relation tuple and return the committed revision."""
+        """Revoke a relation tuple in this client's tenant."""
 
         rt = RelationTuple.from_strings(object, relation, subject)
-        return self.relations_repository.write((TupleMutation.delete(rt),))
+        return self.relations_repository.write(
+            self._write_context(),
+            (TupleMutation.delete(rt),),
+        )
 
     def check(
         self,
@@ -119,13 +133,10 @@ class ZanzibarClient:
     ) -> bool:
         """Return whether a direct subject is authorized at requested consistency."""
 
-        revision = self._revision_for_consistency(consistency)
-        return self.check_at_revision(
-            object,
-            relation,
-            subject,
-            revision=revision,
-        )
+        context = self._context_for_consistency(consistency)
+        request = CheckRequest.from_strings(object, relation, subject)
+        response = self._check_engine.check(request, context=context)
+        return response.allowed
 
     def check_at_revision(
         self,
@@ -137,8 +148,12 @@ class ZanzibarClient:
     ) -> bool:
         """Return whether a direct subject is authorized at an exact revision."""
 
-        request = CheckRequest.from_strings(object, relation, subject)
-        response = self._check_engine.check(request, revision=revision)
+        response = self.check_detailed_at_revision(
+            object,
+            relation,
+            subject,
+            revision=revision,
+        )
         return response.allowed
 
     def check_detailed(
@@ -151,13 +166,9 @@ class ZanzibarClient:
     ) -> CheckResponse:
         """Return the full check result, including optional debug trace data."""
 
-        revision = self._revision_for_consistency(consistency)
-        return self.check_detailed_at_revision(
-            object,
-            relation,
-            subject,
-            revision=revision,
-        )
+        context = self._context_for_consistency(consistency)
+        request = CheckRequest.from_strings(object, relation, subject)
+        return self._check_engine.check(request, context=context)
 
     def check_detailed_at_revision(
         self,
@@ -170,7 +181,10 @@ class ZanzibarClient:
         """Return the full check result evaluated against an exact revision."""
 
         request = CheckRequest.from_strings(object, relation, subject)
-        return self._check_engine.check(request, revision=revision)
+        return self._check_engine.check(
+            request,
+            context=self._read_context_at_revision(revision),
+        )
 
     def list_objects(
         self,
@@ -182,12 +196,12 @@ class ZanzibarClient:
     ) -> list[str]:
         """Enumerate objects of a type for which a direct subject is authorized."""
 
-        revision = self._revision_for_consistency(consistency)
-        return self.list_objects_at_revision(
+        context = self._context_for_consistency(consistency)
+        return self._list_objects_in_context(
             object_type,
             relation,
             subject,
-            revision=revision,
+            context=context,
         )
 
     def list_objects_at_revision(
@@ -200,21 +214,12 @@ class ZanzibarClient:
     ) -> list[str]:
         """Enumerate authorized objects at an exact revision."""
 
-        Subject.from_string(subject).require_direct()
-        candidates: set[str] = set()
-        for t in self.relations_repository.read(
-            TupleFilter(object_type=object_type),
-            revision=revision,
-        ):
-            candidates.add(str(t.object.id))
-
-        results: list[str] = []
-        for object_id in sorted(candidates):
-            obj_str = f"{object_type}:{object_id}"
-            request = CheckRequest.from_strings(obj_str, relation, subject)
-            if self._check_engine.check(request, revision=revision).allowed:
-                results.append(obj_str)
-        return results
+        return self._list_objects_in_context(
+            object_type,
+            relation,
+            subject,
+            context=self._read_context_at_revision(revision),
+        )
 
     def list_subjects_direct(
         self,
@@ -225,11 +230,11 @@ class ZanzibarClient:
     ) -> list[str]:
         """List direct subjects for an object's relation at the resolved revision."""
 
-        revision = self._revision_for_consistency(consistency)
-        return self.list_subjects_direct_at_revision(
+        context = self._context_for_consistency(consistency)
+        return self._list_subjects_direct_in_context(
             object,
             relation,
-            revision=revision,
+            context=context,
         )
 
     def list_subjects_direct_at_revision(
@@ -241,14 +246,11 @@ class ZanzibarClient:
     ) -> list[str]:
         """List direct subjects for an object's relation at an exact revision."""
 
-        obj = Obj.from_string(object)
-        direct = []
-        for t in self.relations_repository.read(
-            TupleFilter.from_parts(obj=obj, relation=Relation(relation)),
-            revision=revision,
-        ):
-            direct.append(str(t.subject))
-        return direct
+        return self._list_subjects_direct_in_context(
+            object,
+            relation,
+            context=self._read_context_at_revision(revision),
+        )
 
     def expand(
         self,
@@ -259,8 +261,8 @@ class ZanzibarClient:
     ) -> SubjectSet:
         """Expand a relation/permission into subjects at the resolved revision."""
 
-        revision = self._revision_for_consistency(consistency)
-        return self.expand_at_revision(object, relation, revision=revision)
+        context = self._context_for_consistency(consistency)
+        return self._expand_in_context(object, relation, context=context)
 
     def expand_at_revision(
         self,
@@ -271,12 +273,10 @@ class ZanzibarClient:
     ) -> SubjectSet:
         """Expand a relation/permission into subjects at an exact revision."""
 
-        obj = Obj.from_string(object)
-        return self._expansion_engine.expand(
-            object_type=str(obj.namespace),
-            object_id=str(obj.id),
-            relation=relation,
-            revision=revision,
+        return self._expand_in_context(
+            object,
+            relation,
+            context=self._read_context_at_revision(revision),
         )
 
     def read_tuples(
@@ -287,8 +287,10 @@ class ZanzibarClient:
     ) -> Iterable[RelationTuple]:
         """Read tuples matching ``filter`` at the requested consistency."""
 
-        revision = self._revision_for_consistency(consistency)
-        return self.relations_repository.read(filter, revision=revision)
+        return self.relations_repository.read(
+            filter,
+            context=self._context_for_consistency(consistency),
+        )
 
     def read_tuples_at_revision(
         self,
@@ -298,12 +300,15 @@ class ZanzibarClient:
     ) -> Iterable[RelationTuple]:
         """Read tuples matching ``filter`` at an exact revision."""
 
-        return self.relations_repository.read(filter, revision=revision)
+        return self.relations_repository.read(
+            filter,
+            context=self._read_context_at_revision(revision),
+        )
 
     def head_revision(self) -> Revision:
-        """Return the latest relation repository revision."""
+        """Return the latest relation repository revision for this tenant."""
 
-        return self.relations_repository.head_revision()
+        return self.relations_repository.head_revision(self.tenant)
 
     def ping(self) -> bool:
         """Lightweight health check across dependencies."""
@@ -315,13 +320,75 @@ class ZanzibarClient:
 
         self.relations_repository.close()
 
-    def _revision_for_consistency(
+    def _write_context(self) -> WriteContext:
+        return WriteContext(self.tenant)
+
+    def _read_context_at_revision(self, revision: Revision) -> ReadContext:
+        return ReadContext(self.tenant, revision)
+
+    def _context_for_consistency(
         self,
         consistency: Consistency | None,
-    ) -> Revision:
-        return revision_for_consistency(
-            self.relations_repository.head_revision(),
+    ) -> ReadContext:
+        token = revision_for_consistency(
+            RevisionToken(self.tenant, self.head_revision()),
             consistency,
+        )
+        return ReadContext(token.tenant, token.revision)
+
+    def _list_objects_in_context(
+        self,
+        object_type: str,
+        relation: str,
+        subject: str,
+        *,
+        context: ReadContext,
+    ) -> list[str]:
+        Subject.from_string(subject).require_direct()
+        candidates: set[str] = set()
+        for t in self.relations_repository.read(
+            TupleFilter(object_type=object_type),
+            context=context,
+        ):
+            candidates.add(str(t.object.id))
+
+        results: list[str] = []
+        for object_id in sorted(candidates):
+            obj_str = f"{object_type}:{object_id}"
+            request = CheckRequest.from_strings(obj_str, relation, subject)
+            if self._check_engine.check(request, context=context).allowed:
+                results.append(obj_str)
+        return results
+
+    def _list_subjects_direct_in_context(
+        self,
+        object: str,
+        relation: str,
+        *,
+        context: ReadContext,
+    ) -> list[str]:
+        obj = Obj.from_string(object)
+        direct = []
+        for t in self.relations_repository.read(
+            TupleFilter.from_parts(obj=obj, relation=Relation(relation)),
+            context=context,
+        ):
+            direct.append(str(t.subject))
+        return direct
+
+    def _expand_in_context(
+        self,
+        object: str,
+        relation: str,
+        *,
+        context: ReadContext,
+    ) -> SubjectSet:
+        obj = Obj.from_string(object)
+        return self._expansion_engine.expand(
+            object_type=str(obj.namespace),
+            object_id=str(obj.id),
+            relation=relation,
+            context=context,
         )
 
     def _validate_tuple_against_schema(self, rt: RelationTuple) -> None:

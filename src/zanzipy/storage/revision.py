@@ -1,4 +1,4 @@
-"""Revision, mutation, and consistency values for relation storage."""
+"""Tenant, revision, mutation, and consistency values for relation storage."""
 
 from dataclasses import dataclass
 from enum import StrEnum
@@ -8,9 +8,25 @@ if TYPE_CHECKING:
     from zanzipy.models import RelationTuple
 
 
+@dataclass(frozen=True, slots=True)
+class TenantId:
+    """Identifier for one authorization universe."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if type(self.value) is not str:
+            raise TypeError("tenant id must be a str")
+        if not self.value:
+            raise ValueError("tenant id must not be empty")
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass(frozen=True, order=True, slots=True)
 class Revision:
-    """Monotonic datastore revision token."""
+    """Monotonic datastore revision token within one tenant."""
 
     value: int
 
@@ -25,10 +41,71 @@ class Revision:
 
 
 @dataclass(frozen=True, slots=True)
+class RevisionToken:
+    """Tenant-scoped revision token."""
+
+    tenant: TenantId
+    revision: Revision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tenant, TenantId):
+            raise TypeError("revision token tenant must be a TenantId")
+        if not isinstance(self.revision, Revision):
+            raise TypeError("revision token revision must be a Revision")
+
+
+@dataclass(frozen=True, slots=True)
+class WriteContext:
+    """Tenant context for relation tuple mutations."""
+
+    tenant: TenantId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tenant, TenantId):
+            raise TypeError("write context tenant must be a TenantId")
+
+
+@dataclass(frozen=True, slots=True)
+class ReadContext:
+    """Tenant and revision context for repository reads and evaluations."""
+
+    tenant: TenantId
+    revision: Revision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tenant, TenantId):
+            raise TypeError("read context tenant must be a TenantId")
+        if not isinstance(self.revision, Revision):
+            raise TypeError("read context revision must be a Revision")
+
+    @property
+    def token(self) -> RevisionToken:
+        """Return the tenant-scoped revision token for this context."""
+
+        return RevisionToken(self.tenant, self.revision)
+
+
+@dataclass(frozen=True, slots=True)
 class WriteResult:
     """Result returned by tuple mutations."""
 
-    revision: Revision
+    token: RevisionToken
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token, RevisionToken):
+            raise TypeError("write result token must be a RevisionToken")
+
+    @property
+    def tenant(self) -> TenantId:
+        """Return the tenant that owns the committed revision."""
+
+        return self.token.tenant
+
+    @property
+    def revision(self) -> Revision:
+        """Return the committed revision within ``tenant``."""
+
+        return self.token.revision
 
 
 class RelationshipOperation(StrEnum):
@@ -63,7 +140,7 @@ class TupleMutation:
 
 @dataclass(frozen=True, slots=True)
 class RelationshipChange:
-    """One tuple change committed at a revision."""
+    """One tuple change committed at a tenant revision."""
 
     revision: Revision
     relation_tuple: RelationTuple
@@ -76,38 +153,59 @@ class Consistency:
 
 @dataclass(frozen=True, slots=True)
 class FullyConsistent(Consistency):
-    """Read at the repository head revision."""
+    """Read at the tenant's repository head revision."""
 
 
 @dataclass(frozen=True, slots=True)
 class AtLeastAsFresh(Consistency):
-    """Read from a revision at least as fresh as ``revision``."""
+    """Read from a tenant token at least as fresh as ``token``."""
 
-    revision: Revision
+    token: RevisionToken
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token, RevisionToken):
+            raise TypeError("at-least-as-fresh consistency requires a RevisionToken")
 
 
 @dataclass(frozen=True, slots=True)
 class AtExactRevision(Consistency):
-    """Read exactly at ``revision``."""
+    """Read exactly at ``token``."""
 
-    revision: Revision
+    token: RevisionToken
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token, RevisionToken):
+            raise TypeError("exact-revision consistency requires a RevisionToken")
 
 
 def revision_for_consistency(
-    head_revision: Revision,
+    head_token: RevisionToken,
     consistency: Consistency | None,
-) -> Revision:
-    """Resolve a consistency policy to the revision used for a read."""
+) -> RevisionToken:
+    """Resolve a consistency policy to the tenant-scoped token used for a read."""
 
     if consistency is None or isinstance(consistency, FullyConsistent):
-        return head_revision
+        return head_token
     if isinstance(consistency, AtLeastAsFresh):
-        if head_revision < consistency.revision:
+        _raise_if_token_tenant_mismatch(head_token, consistency.token)
+        if head_token.revision < consistency.token.revision:
             raise ValueError(
                 "requested revision is newer than repository head: "
-                f"requested {consistency.revision}, head {head_revision}"
+                f"requested {consistency.token.revision}, head {head_token.revision}"
             )
-        return head_revision
+        return head_token
     if isinstance(consistency, AtExactRevision):
-        return consistency.revision
+        _raise_if_token_tenant_mismatch(head_token, consistency.token)
+        return consistency.token
     raise TypeError(f"unknown consistency policy: {type(consistency).__name__}")
+
+
+def _raise_if_token_tenant_mismatch(
+    head_token: RevisionToken,
+    requested_token: RevisionToken,
+) -> None:
+    if head_token.tenant != requested_token.tenant:
+        raise ValueError(
+            "consistency token tenant does not match repository tenant: "
+            f"requested {requested_token.tenant}, head {head_token.tenant}"
+        )

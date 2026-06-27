@@ -1,4 +1,4 @@
-"""Revision-aware read-through cache decorator for relation repositories."""
+"""Tenant/revision-aware read-through cache decorator for relation repositories."""
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -8,54 +8,61 @@ from zanzipy.storage.repos.abstract.relations import RelationRepository
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-    from zanzipy.models import RelationTuple, Subject, TupleFilter
+    from zanzipy.models import Obj, RelationTuple, Subject, TupleFilter
     from zanzipy.storage.cache.abstract.tuples import TupleCache
     from zanzipy.storage.revision import (
+        ReadContext,
         RelationshipChange,
         Revision,
+        TenantId,
         TupleMutation,
+        WriteContext,
         WriteResult,
     )
 
 
 @dataclass(slots=True)
 class CachedRelationRepository(RelationRepository):
-    """Add revision-scoped read-through caching to a relation repository.
+    """Add tenant/revision-scoped read-through caching to a relation repository.
 
     Writes, single-key reads, watches, and diagnostics delegate to the backend;
-    cached bucket entries are keyed by revision, so immutable snapshots do not
-    need invalidation after later writes.
+    cached bucket entries are keyed by tenant and revision, so immutable
+    snapshots do not need invalidation after later writes.
     """
 
     backend: RelationRepository
     cache: TupleCache
 
-    def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
-        """Delegate writes without clearing revision-scoped cache entries.
+    def write(
+        self,
+        context: WriteContext,
+        mutations: Iterable[TupleMutation],
+    ) -> WriteResult:
+        """Delegate writes without clearing tenant revision-scoped cache entries.
 
         Existing cache entries remain valid because they describe immutable
-        revisions; reads for a newly written revision fill separate entries.
+        tenant revisions; reads for a newly written revision fill separate entries.
         """
-        return self.backend.write(mutations)
+        return self.backend.write(context, mutations)
 
-    def head_revision(self) -> Revision:
-        """Return the backend head revision."""
-        return self.backend.head_revision()
+    def head_revision(self, tenant: TenantId) -> Revision:
+        """Return the backend head revision for ``tenant``."""
+        return self.backend.head_revision(tenant)
 
     def get(
         self,
         key: RelationTuple,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> RelationTuple | None:
         """Delegate exact tuple lookup to the backend."""
-        return self.backend.get(key, revision=revision)
+        return self.backend.get(key, context=context)
 
     def read(
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
         """Read through cached object or subject buckets when filters allow it.
 
@@ -66,7 +73,7 @@ class CachedRelationRepository(RelationRepository):
             assert obj is not None
             return [
                 tuple_
-                for tuple_ in self._object_bucket(obj, revision=revision)
+                for tuple_ in self._object_bucket(obj, context=context)
                 if filter.matches(tuple_)
             ]
 
@@ -76,26 +83,31 @@ class CachedRelationRepository(RelationRepository):
             tuples = self._subject_bucket(
                 subject,
                 filter.subject_bucket_filter(),
-                revision=revision,
+                context=context,
             )
             return [tuple_ for tuple_ in tuples if filter.matches(tuple_)]
 
-        return self.backend.read(filter, revision=revision)
+        return self.backend.read(filter, context=context)
 
     def read_reverse(
         self,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> Iterable[RelationTuple]:
         """Use cached subject buckets for reverse reads, otherwise delegate."""
         if filter.is_subject_bucket:
-            return self.read(filter, revision=revision)
-        return self.backend.read_reverse(filter, revision=revision)
+            return self.read(filter, context=context)
+        return self.backend.read_reverse(filter, context=context)
 
-    def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
+    def watch(
+        self,
+        tenant: TenantId,
+        *,
+        after: Revision,
+    ) -> Iterator[RelationshipChange]:
         """Delegate watch streams directly to the backend."""
-        return self.backend.watch(after=after)
+        return self.backend.watch(tenant, after=after)
 
     def ping(self) -> bool:
         """Return whether both backend and cache are reachable."""
@@ -118,15 +130,15 @@ class CachedRelationRepository(RelationRepository):
 
     def _object_bucket(
         self,
-        obj: object,
+        obj: Obj,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> list[RelationTuple]:
-        cached = self.cache.get_by_object(obj, revision=revision)
+        cached = self.cache.get_by_object(obj, context=context)
         if cached is not None:
             return list(cached)
-        result = list(self.backend.by_object(obj, revision=revision))
-        self.cache.set_by_object(obj, revision=revision, tuples=result)
+        result = list(self.backend.by_object(obj, context=context))
+        self.cache.set_by_object(obj, context=context, tuples=result)
         return result
 
     def _subject_bucket(
@@ -134,11 +146,11 @@ class CachedRelationRepository(RelationRepository):
         subject: Subject,
         filter: TupleFilter,
         *,
-        revision: Revision,
+        context: ReadContext,
     ) -> list[RelationTuple]:
-        cached = self.cache.get_by_subject(subject, revision=revision)
+        cached = self.cache.get_by_subject(subject, context=context)
         if cached is not None:
             return list(cached)
-        result = list(self.backend.read_reverse(filter, revision=revision))
-        self.cache.set_by_subject(subject, revision=revision, tuples=result)
+        result = list(self.backend.read_reverse(filter, context=context))
+        self.cache.set_by_subject(subject, context=context, tuples=result)
         return result
