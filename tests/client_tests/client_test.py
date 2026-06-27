@@ -2,8 +2,7 @@ import pytest
 
 from zanzipy.client import ZanzibarClient
 from zanzipy.engine.authorization import AuthorizationEngine
-from zanzipy.engine.expander import SubjectSet
-from zanzipy.models import CheckResponse, Obj, TupleFilter
+from zanzipy.models import TupleFilter
 from zanzipy.models.errors import IdentifierValidationError, InvalidTupleFormatError
 from zanzipy.models.tuple import RelationTuple
 from zanzipy.schema.namespace import NamespaceDef
@@ -263,45 +262,15 @@ class TestZanzibarClient:
     def test_authorization_engine_boundary_can_back_client_reads(self) -> None:
         registry = self._base_registry()
         repo = InMemoryRelationRepository()
+        engine = AuthorizationEngine(
+            relations_repository=repo,
+            schema=registry,
+            max_depth=7,
+            enable_debug=True,
+        )
+        client = ZanzibarClient.from_authorization_engine(engine, tenant="acme")
 
-        class RecordingAuthorizationEngine(AuthorizationEngine):
-            def __init__(self, relations_repository, schema) -> None:
-                self._relations_repository = relations_repository
-                self._schema = schema
-                self._max_depth = 7
-                self._enable_debug = True
-                self.calls = []
-
-            def check(self, request, *, context):
-                self.calls.append(("check", request, context))
-                return CheckResponse(allowed=True, debug_trace=["recorded"])
-
-            def lookup_resources(
-                self,
-                *,
-                resource_type: str,
-                permission: str,
-                subject,
-                context,
-            ):
-                self.calls.append(
-                    ("lookup_resources", resource_type, permission, subject, context)
-                )
-                return [Obj.from_string("document:doc-from-engine")]
-
-            def expand(
-                self,
-                object_type: str,
-                object_id: str,
-                relation: str,
-                *,
-                context,
-            ):
-                self.calls.append(("expand", object_type, object_id, relation, context))
-                return SubjectSet(users={"user:alice"})
-
-        engine = RecordingAuthorizationEngine(repo, registry)
-        client = ZanzibarClient(authorization_engine=engine, tenant="acme")
+        client.write("document:doc", "owner", "user:alice")
 
         assert client.authorization_engine is engine
         assert client.relations_repository is repo
@@ -309,20 +278,15 @@ class TestZanzibarClient:
         assert client.max_check_depth == 7
         assert client.enable_debug is True
         assert client.check("document:doc", "owner", "user:alice") is True
-        assert client.check_detailed(
-            "document:doc", "owner", "user:alice"
-        ).debug_trace == ["recorded"]
+
+        detailed = client.check_detailed("document:doc", "owner", "user:alice")
+        assert detailed.allowed is True
+        assert detailed.debug_trace is not None
+        assert detailed.debug_trace[0] == "context tenant=acme revision=1"
         assert client.list_objects("document", "owner", "user:alice") == [
-            "document:doc-from-engine"
+            "document:doc"
         ]
         assert client.expand("document:doc", "owner").users == {"user:alice"}
-        assert [call[0] for call in engine.calls] == [
-            "check",
-            "check",
-            "lookup_resources",
-            "expand",
-        ]
-        assert all(call[-1].tenant == TenantId("acme") for call in engine.calls)
 
     def test_list_objects_happy_and_errors(self) -> None:
         registry = self._base_registry()

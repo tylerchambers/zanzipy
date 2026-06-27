@@ -7,6 +7,7 @@ from zanzipy.schema.relations import RelationDef
 from zanzipy.schema.rules import ComputedUsersetRule, RewriteRule
 from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
+from zanzipy.storage.cache.concrete.lru import LruTupleCache
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
 from zanzipy.storage.revision import ReadContext, TenantId, TupleMutation, WriteContext
 
@@ -105,6 +106,27 @@ def test_authorization_engine_shares_depth_and_debug_across_operations() -> None
     assert resources == []
 
 
+def test_authorization_engine_owns_tuple_cache_decorator() -> None:
+    registry = _registry()
+    repo = _repo_with_owner()
+    cache = LruTupleCache(max_entries=10, ttl_seconds=None)
+    engine = AuthorizationEngine(
+        relations_repository=repo,
+        schema=registry,
+        tuple_cache=cache,
+    )
+    context = _context(repo)
+    request = CheckRequest.from_strings("document:doc1", "owner", "user:alice")
+
+    assert engine.relations_repository is not repo
+    assert engine.check(request, context=context).allowed is True
+    assert engine.check(request, context=context).allowed is True
+
+    cache_info = cache.info()
+    assert cache_info["misses"] == 1
+    assert cache_info["hits"] == 1
+
+
 def test_authorization_engine_reuses_compiled_rule_cache_across_operations() -> None:
     registry = _registry()
     repo = _repo_with_owner()
@@ -124,7 +146,15 @@ def test_authorization_engine_reuses_compiled_rule_cache_across_operations() -> 
     sets_after_check = len(cache.set_calls)
 
     expanded = engine.expand("document", "doc1", "can_view", context=context)
+    resources = engine.lookup_resources(
+        resource_type="document",
+        permission="can_view",
+        subject=Subject.from_string("user:alice"),
+        context=context,
+    )
 
     assert expanded.users == {"user:alice"}
+    assert [str(resource) for resource in resources] == ["document:doc1"]
     assert len(cache.set_calls) == sets_after_check
-    assert cache.get_calls.count(("document", "can_view")) == 2
+    assert cache.get_calls.count(("document", "can_view")) == 3
+    assert cache.get_calls.count(("document", "owner")) == 3

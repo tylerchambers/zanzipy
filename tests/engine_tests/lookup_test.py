@@ -10,6 +10,7 @@ from zanzipy.schema.rules import (
     ComputedUsersetRule,
     ExclusionRule,
     IntersectionRule,
+    ThisRule,
     TupleToUsersetRule,
     UnionRule,
 )
@@ -310,6 +311,30 @@ def test_union_intersection_and_exclusion_lookup_are_correct() -> None:
         "document:both",
         "document:owned",
     ]
+
+
+def test_lookup_cycle_matches_check_for_path_local_exclusion_rewrite() -> None:
+    registry = SchemaRegistry()
+    registry.register(
+        NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "viewer",
+                    (_user_ref(),),
+                    rewrite=ExclusionRule(ThisRule(), ComputedUsersetRule("viewer")),
+                ),
+            ),
+        )
+    )
+    client = ZanzibarClient(
+        relations_repository=InMemoryRelationRepository(),
+        schema=registry,
+    )
+    client.write("document:doc", "viewer", "user:alice")
+
+    assert client.check("document:doc", "viewer", "user:alice") is True
+    assert client.list_objects("document", "viewer", "user:alice") == ["document:doc"]
 
 
 def test_tuple_to_userset_lookup_uses_parent_reverse_reads() -> None:

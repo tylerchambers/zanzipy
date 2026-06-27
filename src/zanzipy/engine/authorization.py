@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from zanzipy.schema.registry import SchemaRegistry
     from zanzipy.schema.rules import RewriteRule
     from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
+    from zanzipy.storage.cache.abstract.tuples import TupleCache
     from zanzipy.storage.repos.abstract.relations import RelationRepository
     from zanzipy.storage.revision import ReadContext
 
@@ -31,8 +32,19 @@ class AuthorizationEngine:
         max_depth: int = 25,
         enable_debug: bool = False,
         compiled_rules_cache: CompiledRuleCache[RewriteRule] | None = None,
+        tuple_cache: TupleCache | None = None,
     ) -> None:
         """Create all authorization operations over the same backing state."""
+
+        if tuple_cache is not None:
+            from zanzipy.storage.repos.decorators.cached_relations import (
+                CachedRelationRepository,
+            )
+
+            relations_repository = CachedRelationRepository(
+                backend=relations_repository,
+                cache=tuple_cache,
+            )
 
         self._relations_repository = relations_repository
         self._schema = schema
@@ -55,6 +67,7 @@ class AuthorizationEngine:
             relations_repository=relations_repository,
             schema=schema,
             max_depth=max_depth,
+            compiled_rules_cache=compiled_rules_cache,
         )
 
     @property

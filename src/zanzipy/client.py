@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from .engine.authorization import AuthorizationEngine
 from .models import (
@@ -47,81 +47,67 @@ class ZanzibarClient:
     def __init__(
         self,
         *,
-        relations_repository: RelationRepository | None = None,
-        schema: SchemaRegistry | None = None,
+        relations_repository: RelationRepository,
+        schema: SchemaRegistry,
         tenant: TenantId | str = _DEFAULT_TENANT,
         enable_debug: bool = False,
         max_check_depth: int = 25,
         tuple_cache: TupleCache | None = None,
-        authorization_engine: AuthorizationEngine | None = None,
     ) -> None:
-        """Create a tenant-scoped client over a schema and relation repository.
+        """Create a tenant-scoped client over a schema and relation repository."""
 
-        Passing ``tuple_cache`` wraps the repository with cache-aware reads and
-        write invalidation before building the default authorization engine. A
-        supplied ``authorization_engine`` owns the repository, schema, traversal
-        depth, and debug settings for check, lookup, and expansion operations.
-        """
-        if authorization_engine is None:
-            if relations_repository is None:
-                raise TypeError(
-                    "relations_repository is required when authorization_engine "
-                    "is not supplied"
-                )
-            if schema is None:
-                raise TypeError(
-                    "schema is required when authorization_engine is not supplied"
-                )
-
-            if tuple_cache is not None:
-                from .storage.repos.decorators.cached_relations import (
-                    CachedRelationRepository,
-                )
-
-                relations_repository = CachedRelationRepository(
-                    backend=relations_repository,
-                    cache=tuple_cache,
-                )
-
-            authorization_engine = AuthorizationEngine(
-                relations_repository=relations_repository,
-                schema=schema,
-                max_depth=max_check_depth,
-                enable_debug=enable_debug,
-            )
-        else:
-            if tuple_cache is not None:
-                raise ValueError(
-                    "tuple_cache cannot be applied when authorization_engine "
-                    "is supplied"
-                )
-            if relations_repository is None:
-                relations_repository = authorization_engine.relations_repository
-            elif relations_repository is not authorization_engine.relations_repository:
-                raise ValueError(
-                    "relations_repository must match authorization_engine repository"
-                )
-
-            if schema is None:
-                schema = authorization_engine.schema
-            elif schema is not authorization_engine.schema:
-                raise ValueError("schema must match authorization_engine schema")
-
-            max_check_depth = authorization_engine.max_depth
-            enable_debug = authorization_engine.enable_debug
-
-        self.relations_repository = relations_repository
-        self.schema = schema
         self.tenant = tenant if isinstance(tenant, TenantId) else TenantId(tenant)
-        self.enable_debug = enable_debug
-        self.max_check_depth = max_check_depth
-        self._authorization_engine = authorization_engine
+        self._authorization_engine = AuthorizationEngine(
+            relations_repository=relations_repository,
+            schema=schema,
+            max_depth=max_check_depth,
+            enable_debug=enable_debug,
+            tuple_cache=tuple_cache,
+        )
+
+    @classmethod
+    def from_authorization_engine(
+        cls,
+        authorization_engine: AuthorizationEngine,
+        *,
+        tenant: TenantId | str = _DEFAULT_TENANT,
+    ) -> Self:
+        """Create a tenant adapter around an existing authorization engine."""
+
+        client = cls.__new__(cls)
+        client.tenant = tenant if isinstance(tenant, TenantId) else TenantId(tenant)
+        client._authorization_engine = authorization_engine
+        return client
 
     @property
     def authorization_engine(self) -> AuthorizationEngine:
         """Return the cohesive authorization engine used by read APIs."""
 
         return self._authorization_engine
+
+    @property
+    def relations_repository(self) -> RelationRepository:
+        """Return the repository owned by the authorization engine."""
+
+        return self._authorization_engine.relations_repository
+
+    @property
+    def schema(self) -> SchemaRegistry:
+        """Return the schema owned by the authorization engine."""
+
+        return self._authorization_engine.schema
+
+    @property
+    def enable_debug(self) -> bool:
+        """Return whether check diagnostics are enabled."""
+
+        return self._authorization_engine.enable_debug
+
+    @property
+    def max_check_depth(self) -> int:
+        """Return the authorization traversal depth limit."""
+
+        return self._authorization_engine.max_depth
 
     def write(self, object: str, relation: str, subject: str) -> WriteResult:
         """Grant a relation tuple in this client's tenant."""
