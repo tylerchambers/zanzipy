@@ -51,7 +51,6 @@ class ZanzibarClient:
         relations_repository: RelationRepository,
         schema: SchemaRegistry,
         tenant: TenantId | str = _DEFAULT_TENANT,
-        check_engine: CheckEngine | None = None,
         enable_debug: bool = False,
         max_check_depth: int = 25,
         tuple_cache: TupleCache | None = None,
@@ -59,8 +58,7 @@ class ZanzibarClient:
         """Create a tenant-scoped client over a schema and relation repository.
 
         Passing ``tuple_cache`` wraps the repository with cache-aware reads and
-        write invalidation. Pass ``check_engine`` only when reusing a custom
-        checker implementation; otherwise the client builds matching check and
+        write invalidation. The client builds matching check, lookup, and
         expansion engines from the supplied schema.
         """
         if tuple_cache is not None:
@@ -79,15 +77,11 @@ class ZanzibarClient:
         self.enable_debug = enable_debug
         self.max_check_depth = max_check_depth
 
-        self._check_engine = (
-            check_engine
-            if check_engine is not None
-            else CheckEngine(
-                relations_repository=relations_repository,
-                schema=schema,
-                max_depth=max_check_depth,
-                enable_debug=enable_debug,
-            )
+        self._check_engine = CheckEngine(
+            relations_repository=relations_repository,
+            schema=schema,
+            max_depth=max_check_depth,
+            enable_debug=enable_debug,
         )
         self._lookup_engine = LookupEngine(
             relations_repository=relations_repository,

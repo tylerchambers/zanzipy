@@ -55,6 +55,43 @@ def _group_member_ref() -> SubjectReference:
     return SubjectReference.from_dict({"namespace": "group", "relation": "member"})
 
 
+def test_lookup_matches_namespace_wildcard_subjects() -> None:
+    registry = SchemaRegistry()
+    registry.register(
+        NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "viewer",
+                    (
+                        _user_ref(),
+                        SubjectReference(namespace="user", wildcard=True),
+                    ),
+                ),
+            ),
+        )
+    )
+    client = ZanzibarClient(
+        relations_repository=InMemoryRelationRepository(),
+        schema=registry,
+    )
+    client.write_many(
+        [
+            ("document:public", "viewer", "user:*"),
+            ("document:private", "viewer", "user:bob"),
+        ]
+    )
+
+    assert client.list_objects("document", "viewer", "user:alice") == [
+        "document:public"
+    ]
+    assert client.list_objects("document", "viewer", "user:bob") == [
+        "document:private",
+        "document:public",
+    ]
+    assert client.list_objects("document", "viewer", "service:alice") == []
+
+
 def test_direct_relation_lookup_uses_reverse_reads_only() -> None:
     registry = SchemaRegistry()
     registry.register(
