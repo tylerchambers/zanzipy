@@ -86,9 +86,10 @@ class ExpansionEngine:
         *,
         revision: Revision | None = None,
     ) -> SubjectSet:
-        """Expand subjects that grant relation/permission on the object.
+        """Return subjects that grant a relation or permission on one object.
 
-        Validates inputs using existing value objects and schema definitions.
+        Inputs are validated against the value-object rules and schema. When no
+        revision is supplied, expansion reads from the repository head.
         """
 
         # Validate identifiers

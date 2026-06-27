@@ -9,7 +9,7 @@ from .subject import Subject
 
 @dataclass(frozen=True, slots=True)
 class CheckRequest:
-    """Request to check if subject has relation to object"""
+    """Value object for checking whether a direct subject has a relation."""
 
     object_type: str
     object_id: str
@@ -24,16 +24,19 @@ class CheckRequest:
 
     @property
     def object(self) -> str:
+        """Return the canonical ``namespace:id`` object reference."""
         return f"{self.object_type}:{self.object_id}"
 
     @property
     def subject(self) -> str:
+        """Return the canonical ``namespace:id`` direct subject reference."""
         return f"{self.subject_type}:{self.subject_id}"
 
     def __str__(self) -> str:
         return f"{self.object}#{self.relation}@{self.subject}"
 
     def to_dict(self) -> dict:
+        """Return the flat dictionary form used by check APIs."""
         return {
             "object_type": self.object_type,
             "object_id": self.object_id,
@@ -44,6 +47,7 @@ class CheckRequest:
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
+        """Create a request from its flat dictionary representation."""
         return cls(
             object_type=data["object_type"],
             object_id=data["object_id"],
@@ -80,12 +84,15 @@ class CheckRequest:
         )
 
     def to_object(self) -> Obj:
+        """Return the request object reference as an ``Obj`` value."""
         return Obj.from_parts(self.object_type, self.object_id)
 
     def to_relation(self) -> Relation:
+        """Return the requested relation as a validated ``Relation`` value."""
         return Relation(self.relation)
 
     def to_subject(self) -> Subject:
+        """Return the direct subject reference as a ``Subject`` value."""
         return Subject.from_parts(self.subject_type, self.subject_id)
 
     def to_filter(self) -> TupleFilter:
@@ -99,7 +106,7 @@ class CheckRequest:
 
 @dataclass(frozen=True, slots=True)
 class CheckResponse:
-    """Response with permission decision and optional debug info"""
+    """Permission-check result with optional traversal diagnostics."""
 
     allowed: bool
     debug_trace: list[str] | None = None

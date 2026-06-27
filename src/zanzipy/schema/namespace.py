@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class NamespaceDef:
     """Container for relations and permissions that belong to one namespace.
 
-    The name follows identifier rules enforced by the `Namespace` value object.
+    The name follows identifier rules enforced by the `NamespaceId` value object.
     Relations and permissions are stored by name and validated for internal
     consistency:
     - No duplicate names across relations and permissions
@@ -42,6 +42,11 @@ class NamespaceDef:
         permissions: tuple[PermissionDef, ...] | PermissionDef | None = None,
         description: str | None = None,
     ) -> None:
+        """Build and validate a namespace definition.
+
+        Accepts single definitions or tuples, rejects duplicate names, and
+        validates rewrite references that can be checked within this namespace.
+        """
         # Validate namespace identifier
         Ns(name)
         self.name = name
@@ -95,13 +100,16 @@ class NamespaceDef:
 
     @property
     def relations(self) -> Mapping[str, RelationDef]:
+        """Return relation definitions keyed by relation name."""
         return self._relations
 
     @property
     def permissions(self) -> Mapping[str, PermissionDef]:
+        """Return permission definitions keyed by permission name."""
         return self._permissions
 
     def to_dict(self) -> dict:
+        """Serialize the namespace to its canonical schema dictionary."""
         return {
             "name": self.name,
             "description": self.description,
@@ -111,6 +119,12 @@ class NamespaceDef:
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
+        """Deserialize and validate a namespace from its schema dictionary.
+
+        Raises:
+            TypeError: If relation or permission collections are not mappings.
+            ValueError: If mapping keys disagree with definition names.
+        """
         relations_raw = data.get("relations", {}) or {}
         permissions_raw = data.get("permissions", {}) or {}
 

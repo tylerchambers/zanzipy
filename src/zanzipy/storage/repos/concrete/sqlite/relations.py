@@ -33,9 +33,10 @@ _VISIBLE_AT = (
 
 
 class SQLiteRelationRepository(RelationRepository):
-    """Stdlib SQLite MVCC implementation of ``RelationRepository``."""
+    """SQLite repository using created/deleted revisions for tuple visibility."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
+        """Open the database, enable SQLite storage pragmas, and create schema."""
         self._conn = sqlite3.connect(db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys=ON;")
@@ -104,6 +105,11 @@ class SQLiteRelationRepository(RelationRepository):
             )
 
     def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
+        """Persist idempotent mutations atomically in one revision transaction.
+
+        Raises:
+            ValueError: If a mutation contains an unknown operation.
+        """
         revision: Revision | None = None
         changes: list[tuple[RelationTuple, RelationshipOperation]] = []
         with self._conn:
@@ -131,6 +137,7 @@ class SQLiteRelationRepository(RelationRepository):
         return WriteResult(self.head_revision() if revision is None else revision)
 
     def head_revision(self) -> Revision:
+        """Return the greatest committed revision stored in SQLite."""
         value = self._conn.execute(
             "SELECT COALESCE(MAX(revision), 0) FROM revisions"
         ).fetchone()[0]
@@ -142,6 +149,11 @@ class SQLiteRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> RelationTuple | None:
+        """Return ``key`` when its visibility window includes ``revision``.
+
+        Raises:
+            ValueError: If ``revision`` is newer than the head revision.
+        """
         self._raise_if_future_revision(revision)
         row = self._conn.execute(
             f"""
@@ -161,6 +173,11 @@ class SQLiteRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> Iterable[RelationTuple]:
+        """Return tuples visible at ``revision`` that match ``filter``.
+
+        Raises:
+            ValueError: If ``revision`` is newer than the head revision.
+        """
         return self._select(filter, revision=revision)
 
     def read_reverse(
@@ -169,9 +186,19 @@ class SQLiteRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> Iterable[RelationTuple]:
+        """Return reverse-filtered tuples visible at ``revision``.
+
+        Raises:
+            ValueError: If ``revision`` is newer than the head revision.
+        """
         return self._select(filter, revision=revision)
 
     def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
+        """Yield writes and deletes committed after ``after`` by revision order.
+
+        Raises:
+            ValueError: If ``after`` is newer than the head revision.
+        """
         self._raise_if_future_revision(after)
         created = self._conn.execute(
             f"""
@@ -215,6 +242,7 @@ class SQLiteRelationRepository(RelationRepository):
             yield change
 
     def info(self) -> dict[str, object]:
+        """Return SQLite backend diagnostics and stored row column names."""
         return {
             "backend": "sqlite",
             "head_revision": self.head_revision().value,
@@ -222,6 +250,7 @@ class SQLiteRelationRepository(RelationRepository):
         }
 
     def close(self) -> None:
+        """Close the owned SQLite connection, suppressing close failures."""
         with suppress(Exception):
             self._conn.close()
 

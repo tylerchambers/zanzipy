@@ -20,15 +20,26 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class CachedRelationRepository(RelationRepository):
-    """Decorate a revisioned relation repository with revision-scoped caches."""
+    """Add revision-scoped read-through caching to a relation repository.
+
+    Writes, single-key reads, watches, and diagnostics delegate to the backend;
+    cached bucket entries are keyed by revision, so immutable snapshots do not
+    need invalidation after later writes.
+    """
 
     backend: RelationRepository
     cache: TupleCache
 
     def write(self, mutations: Iterable[TupleMutation]) -> WriteResult:
+        """Delegate writes without clearing revision-scoped cache entries.
+
+        Existing cache entries remain valid because they describe immutable
+        revisions; reads for a newly written revision fill separate entries.
+        """
         return self.backend.write(mutations)
 
     def head_revision(self) -> Revision:
+        """Return the backend head revision."""
         return self.backend.head_revision()
 
     def get(
@@ -37,6 +48,7 @@ class CachedRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> RelationTuple | None:
+        """Delegate exact tuple lookup to the backend."""
         return self.backend.get(key, revision=revision)
 
     def read(
@@ -45,6 +57,10 @@ class CachedRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> Iterable[RelationTuple]:
+        """Read through cached object or subject buckets when filters allow it.
+
+        Non-bucket filters delegate to the backend without caching.
+        """
         if filter.is_object_bucket:
             obj = filter.object_ref
             assert obj is not None
@@ -72,17 +88,21 @@ class CachedRelationRepository(RelationRepository):
         *,
         revision: Revision,
     ) -> Iterable[RelationTuple]:
+        """Use cached subject buckets for reverse reads, otherwise delegate."""
         if filter.is_subject_bucket:
             return self.read(filter, revision=revision)
         return self.backend.read_reverse(filter, revision=revision)
 
     def watch(self, *, after: Revision) -> Iterator[RelationshipChange]:
+        """Delegate watch streams directly to the backend."""
         return self.backend.watch(after=after)
 
     def ping(self) -> bool:
+        """Return whether both backend and cache are reachable."""
         return self.backend.ping() and self.cache.ping()
 
     def info(self) -> dict[str, object]:
+        """Return decorator diagnostics with nested backend and cache info."""
         return {
             "decorator": "CachedRelationRepository",
             "backend": self.backend.info(),
@@ -90,6 +110,7 @@ class CachedRelationRepository(RelationRepository):
         }
 
     def close(self) -> None:
+        """Close the backend and cache, always attempting both."""
         try:
             self.backend.close()
         finally:

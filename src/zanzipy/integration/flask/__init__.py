@@ -63,6 +63,7 @@ class Zanzibar:
     """
 
     def __init__(self, app: Any | None = None) -> None:
+        """Create an extension and optionally bind it to a Flask app."""
         self._app_keys: set[int] = set()
         self._default_state: _ZanzibarState | None = None
         self._default_token: Token[ZanzibarEngine] | None = None
@@ -71,11 +72,13 @@ class Zanzibar:
 
     @property
     def client(self) -> ZanzibarClient | None:
+        """Return the client for the active app or sole initialized app."""
         state = self._optional_state()
         return None if state is None else state.client
 
     @property
     def engine(self) -> ZanzibarEngine | None:
+        """Return the engine for the active app or sole initialized app."""
         state = self._optional_state()
         return None if state is None else state.engine
 
@@ -100,6 +103,8 @@ class Zanzibar:
           - ZANZIBAR_TUPLE_CACHE: object or callable returning a cache
 
         Factories may accept the Flask app as their only positional argument.
+        App-specific state is stored on ``app.extensions`` and the engine is
+        rebound for each Flask app context so mixins resolve the correct app.
         """
 
         self._ensure_extensions(app)
@@ -151,15 +156,19 @@ class Zanzibar:
         self._install_context_binding(app, state)
 
     def check(self, *args: Any, **kwargs: Any) -> bool:
+        """Delegate a permission check to the context-resolved client."""
         return self._require_state().client.check(*args, **kwargs)
 
     def write(self, *args: Any, **kwargs: Any) -> Any:
+        """Delegate tuple creation to the context-resolved client."""
         return self._require_state().client.write(*args, **kwargs)
 
     def delete(self, *args: Any, **kwargs: Any) -> Any:
+        """Delegate tuple deletion to the context-resolved client."""
         return self._require_state().client.delete(*args, **kwargs)
 
     def expand(self, *args: Any, **kwargs: Any) -> Any:
+        """Delegate permission expansion to the context-resolved client."""
         return self._require_state().client.expand(*args, **kwargs)
 
     def _require_state(self) -> _ZanzibarState:

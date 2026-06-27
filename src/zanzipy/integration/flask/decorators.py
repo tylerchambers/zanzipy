@@ -10,6 +10,8 @@ if TYPE_CHECKING:
 
 
 class SubjectResolver(Protocol):
+    """Protocol for callables that resolve the current request subject."""
+
     def __call__(self, *args: Any, **kwargs: Any) -> str:
         """Return a canonical subject string like 'user:123'."""
 
@@ -23,14 +25,14 @@ def permission_required(
 ):
     """Guard a Flask view with a Zanzibar permission check.
 
+    The resolvers receive the same arguments as the wrapped view, and the
+    check is delegated through the current Flask extension proxy.
+
     Args:
-        object_resolver: function receiving view args/kwargs and returning
-            an object string like 'document:abc'.
-        relation: permission or relation to check.
-        subject_resolver: function receiving view args/kwargs and returning
-            a subject string like 'user:123'.
-        on_denied: optional callable returning a Flask response when denied.
-            If not provided, returns (403, {'allowed': False}).
+        object_resolver: Function returning an object string like 'document:abc'.
+        relation: Permission or relation to check.
+        subject_resolver: Function returning a subject string like 'user:123'.
+        on_denied: Optional callable returning a Flask response when denied.
     """
 
     def decorator(view_func: Callable[..., Any]) -> Callable[..., Any]:

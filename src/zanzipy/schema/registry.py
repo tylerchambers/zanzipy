@@ -20,15 +20,16 @@ type SchemaDefinition = RelationDef | PermissionDef
 
 @dataclass(slots=True)
 class SchemaRegistry:
-    """Central registry for all namespace definitions.
+    """Owns the namespace set that defines an authorization model.
 
-    Manages the authorization model for the entire system.
+    Registry updates validate the whole schema before becoming visible, so
+    callers can build or replace namespaces without exposing partial models.
     """
 
     _namespaces: dict[str, NamespaceDef] = field(default_factory=dict)
 
     def register(self, namespace: NamespaceDef) -> None:
-        """Register a namespace definition after validating the full registry."""
+        """Add or replace one namespace after full-registry validation."""
 
         validated = self._validated_namespace(namespace)
         candidate = dict(self._namespaces)
@@ -88,9 +89,10 @@ class SchemaRegistry:
         self._namespaces = candidate
 
     def get_namespace(self, name: str) -> NamespaceDef:
-        """Get a namespace by name.
+        """Return a registered namespace.
 
-        Raises ValueError if not found.
+        Raises:
+            ValueError: If ``name`` is not registered.
         """
 
         try:
@@ -99,7 +101,7 @@ class SchemaRegistry:
             raise ValueError(f"Unknown namespace: {name}") from exc
 
     def get_definition(self, object_type: str, relation: str) -> SchemaDefinition:
-        """Get a relation or permission definition by name from a namespace."""
+        """Return the relation or permission definition named by a namespace edge."""
 
         ns = self.get_namespace(object_type)
         if relation in ns.relations:
@@ -111,12 +113,12 @@ class SchemaRegistry:
         )
 
     def get_relation_definition(self, object_type: str, relation: str) -> dict:
-        """Get a serialized relation or permission definition by name."""
+        """Return a serialized relation or permission definition for engine use."""
 
         return self.get_definition(object_type, relation).to_dict()
 
     def list_namespaces(self) -> list[str]:
-        """List all registered namespace names (sorted)."""
+        """Return registered namespace names in deterministic order."""
 
         return sorted(self._namespaces.keys())
 
@@ -222,11 +224,11 @@ class SchemaRegistry:
 
     @staticmethod
     def diff_namespaces(old: NamespaceDef, new: NamespaceDef) -> dict:
-        """Compute a shallow diff between two NamespaceDef instances.
+        """Describe relation, permission, and metadata changes between namespaces.
 
-        Returns a dictionary with added/removed/changed names for relations and
-        permissions, plus top-level name/description changes. 'Changed' is based
-        on per-entry dict comparison.
+        The result is a shallow, JSON-friendly summary intended for migration
+        previews and diagnostics; changed entries are detected by serialized
+        definition comparison.
         """
 
         old_rel = old.relations

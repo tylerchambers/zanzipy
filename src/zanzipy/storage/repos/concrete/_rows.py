@@ -59,6 +59,7 @@ class StoredRelationTuple:
         created_revision: int | None = None,
         deleted_revision: int | None = None,
     ) -> StoredRelationTuple:
+        """Build a storage row for ``tuple_`` with optional visibility bounds."""
         return cls(
             tuple_key=str(tuple_),
             object_ns=str(tuple_.object.namespace),
@@ -77,6 +78,7 @@ class StoredRelationTuple:
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, object]) -> StoredRelationTuple:
+        """Build a storage row from SQL-style column mappings."""
         subject_rel = row["subject_rel"]
         return cls(
             tuple_key=str(row["tuple_key"]),

@@ -77,16 +77,20 @@ RelationName = str
 
 
 class RewriteRule(ABC):
-    """Base class for relation rewrite rules"""
+    """Abstract base for rewrite rules with dictionary serialization."""
 
     @abstractmethod
     def to_dict(self) -> dict:
-        """Serialize to portable JSON format"""
+        """Serialize this rule to its canonical schema dictionary."""
         pass
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RewriteRule:
-        """Deserialize a rule from its dict form."""
+        """Deserialize a rewrite rule from its canonical dictionary form.
+
+        Raises:
+            ValueError: If the ``type`` field is not a known rewrite rule type.
+        """
         raw_type = data.get("type")
         try:
             rule_type = RewriteRuleType(raw_type)
@@ -140,17 +144,18 @@ def _require_rule(value: RewriteRule, operand_name: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class ThisRule(RewriteRule):
-    """Leaf that references the direct (stored) membership of the relation."""
+    """Leaf rule that uses the relation's directly stored tuples."""
 
     type: RewriteRuleType = field(default=RewriteRuleType.THIS, init=False)
 
     def to_dict(self) -> dict:
+        """Serialize this rule as a ``this`` rewrite node."""
         return {"type": self.type}
 
 
 @dataclass(frozen=True, slots=True)
 class ComputedUsersetRule(RewriteRule):
-    """Leaf that references another relation by name."""
+    """Leaf rule that evaluates another relation or permission by name."""
 
     relation: RelationName
 
@@ -160,13 +165,13 @@ class ComputedUsersetRule(RewriteRule):
         Rel(self.relation)
 
     def to_dict(self) -> dict:
+        """Serialize this rule as a computed-userset rewrite node."""
         return {"type": self.type, "relation": self.relation}
 
 
 @dataclass(frozen=True, slots=True)
 class TupleToUsersetRule(RewriteRule):
-    """Tuple-to-userset: follow a relation on the object
-    to a relation on the subject."""
+    """Rule that follows one object relation before evaluating another."""
 
     tuple_relation: RelationName
     computed_relation: RelationName
@@ -176,6 +181,7 @@ class TupleToUsersetRule(RewriteRule):
         Rel(self.computed_relation)
 
     def to_dict(self) -> dict:
+        """Serialize this rule as a tuple-to-userset rewrite node."""
         return {
             "type": self.type,
             "tuple_relation": self.tuple_relation,
@@ -187,32 +193,22 @@ class TupleToUsersetRule(RewriteRule):
 
 @dataclass(frozen=True, slots=True)
 class DirectRule(RewriteRule):
-    """Direct relation assignment (stored tuples).
-
-    Direct rules indicate that the relation is backed only by stored tuples
-    (no rewrite).
-
-    Example:
-        relation owner: user  ->  DirectRule()
-    """
+    """Rule that uses only directly stored tuples for a relation."""
 
     type: RewriteRuleType = field(default=RewriteRuleType.DIRECT, init=False)
 
     def to_dict(self) -> dict:
+        """Serialize this rule as a ``direct`` rewrite node."""
         return {"type": self.type}
 
 
 @dataclass(frozen=True, slots=True)
 class UnionRule(RewriteRule):
-    """Union: access is granted if any of the children relations grant it.
+    """Rule that grants access when any child rule grants it.
 
-
-    Example:
-        permission can_view = owner + editor
-        -> UnionRule(children=(
-            ComputedUsersetRule("owner"),
-            ComputedUsersetRule("editor"),
-        ))
+    Raises:
+        ValueError: If constructed with no children.
+        TypeError: If any child is not a rewrite rule.
     """
 
     # Children are nested rewrite rules; operands must be typed nodes
@@ -226,6 +222,7 @@ class UnionRule(RewriteRule):
         )
 
     def to_dict(self) -> dict:
+        """Serialize this rule and its children as a union node."""
         return {"type": self.type, "children": [c.to_dict() for c in self.children]}
 
     type: RewriteRuleType = field(default=RewriteRuleType.UNION, init=False)
@@ -233,15 +230,11 @@ class UnionRule(RewriteRule):
 
 @dataclass(frozen=True, slots=True)
 class IntersectionRule(RewriteRule):
-    """Intersection: access requires all children relations to grant it.
+    """Rule that grants access only when every child rule grants it.
 
-
-    Example:
-        permission can_download = viewer & member
-        -> IntersectionRule(children=(
-            ComputedUsersetRule("viewer"),
-            ComputedUsersetRule("member"),
-        ))
+    Raises:
+        ValueError: If constructed with no children.
+        TypeError: If any child is not a rewrite rule.
     """
 
     # Children are nested rewrite rules; operands must be typed nodes
@@ -255,6 +248,7 @@ class IntersectionRule(RewriteRule):
         )
 
     def to_dict(self) -> dict:
+        """Serialize this rule and its children as an intersection node."""
         return {"type": self.type, "children": [c.to_dict() for c in self.children]}
 
     type: RewriteRuleType = field(default=RewriteRuleType.INTERSECTION, init=False)
@@ -262,16 +256,10 @@ class IntersectionRule(RewriteRule):
 
 @dataclass(frozen=True, slots=True)
 class ExclusionRule(RewriteRule):
-    """Exclusion: grant from base but not from subtract.
+    """Rule that grants from ``base`` except matches from ``subtract``.
 
-    The expression is ``base - subtract``.
-
-    Example:
-        permission can_comment = member - banned
-        -> ExclusionRule(
-            base=ComputedUsersetRule("member"),
-            subtract=ComputedUsersetRule("banned"),
-        )
+    Raises:
+        TypeError: If either operand is not a rewrite rule.
     """
 
     # Operands are nested rewrite rules; operands must be typed nodes
@@ -283,6 +271,7 @@ class ExclusionRule(RewriteRule):
         _require_rule(self.subtract, "subtract")
 
     def to_dict(self) -> dict:
+        """Serialize this rule and operands as an exclusion node."""
         return {
             "type": self.type,
             "base": self.base.to_dict(),

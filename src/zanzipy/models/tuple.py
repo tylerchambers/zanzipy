@@ -68,6 +68,7 @@ class RelationTuple:
         relation: Relation | str,
         subject: Subject | str,
     ) -> Self:
+        """Create a tuple from value objects or canonical string references."""
         obj = object if isinstance(object, Obj) else Obj.from_string(object)
         rel = relation if isinstance(relation, Relation) else Relation(relation)
         subj = subject if isinstance(subject, Subject) else Subject.from_string(subject)
@@ -75,6 +76,11 @@ class RelationTuple:
 
     @classmethod
     def from_strings(cls, object_str: str, relation: str, subject_str: str) -> Self:
+        """Create a tuple from separate object, relation, and subject strings.
+
+        Raises:
+            InvalidTupleFormatError: If any component makes the tuple invalid.
+        """
         tuple_string = f"{object_str}#{relation}@{subject_str}"
         try:
             return cls.from_parts(object_str, relation, subject_str)

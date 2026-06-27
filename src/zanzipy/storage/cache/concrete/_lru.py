@@ -26,6 +26,7 @@ class LruStore[TKey, TValue]:
         ttl_seconds: float | None,
         clock: Callable[[], float] | None = None,
     ) -> None:
+        """Create a bounded store, validating capacity and optional TTL."""
         if max_entries < 0:
             raise ValueError("max_entries must be non-negative")
         if ttl_seconds is not None and ttl_seconds < 0:
@@ -40,6 +41,7 @@ class LruStore[TKey, TValue]:
         self._misses = 0
 
     def get(self, token: TKey) -> TValue | None:
+        """Return a value on hit, move it to most-recent, or record a miss."""
         with self._lock:
             entry = self._entries.get(token)
             if entry is None:
@@ -54,30 +56,36 @@ class LruStore[TKey, TValue]:
             return entry.value
 
     def set(self, key: TKey, value: TValue) -> None:
+        """Store a value, refresh its TTL, and evict least-recent entries."""
         with self._lock:
             self._entries[key] = _Entry(value=value, expires_at=self._expires_at())
             self._entries.move_to_end(key, last=True)
             self._evict_if_needed()
 
     def delete(self, key: TKey) -> None:
+        """Remove a key if present without affecting hit or miss counts."""
         with self._lock:
             self._entries.pop(key, None)
 
     def delete_where(self, predicate: Callable[[TKey], bool]) -> None:
+        """Remove all keys whose cache key satisfies ``predicate``."""
         with self._lock:
             keys = [key for key in self._entries if predicate(key)]
             for key in keys:
                 self._entries.pop(key, None)
 
     def clear(self) -> None:
+        """Drop all entries while keeping accumulated diagnostics."""
         with self._lock:
             self._entries.clear()
 
     def count_where(self, predicate: Callable[[TKey], bool]) -> int:
+        """Count entries whose cache key satisfies ``predicate``."""
         with self._lock:
             return sum(1 for key in self._entries if predicate(key))
 
     def info(self) -> dict[str, object]:
+        """Return capacity, TTL, current size, and hit/miss counters."""
         with self._lock:
             return {
                 "max_entries": self._max_entries,

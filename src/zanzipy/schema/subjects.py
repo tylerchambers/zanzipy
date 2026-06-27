@@ -4,12 +4,10 @@ from zanzipy.models import NamespaceId, Relation as Rel
 
 
 class SubjectReference:
-    """Represents an allowed subject type for a relation.
+    """Allowed subject type for a relation definition.
 
-    Forms supported (SpiceDB compatible):
-    - "ns" (e.g., user)
-    - "ns#rel" (e.g., group#member)
-    - "ns:*" (namespace wildcard)
+    Supports direct namespaces (``user``), subject sets (``group#member``),
+    and namespace wildcards (``user:*``).
     """
 
     __slots__ = ("_namespace", "_relation", "_wildcard")
@@ -21,6 +19,12 @@ class SubjectReference:
         relation: Rel | str | None = None,
         wildcard: bool = False,
     ) -> None:
+        """Normalize and validate a schema subject reference.
+
+        Raises:
+            TypeError: If inputs use unsupported types.
+            ValueError: If a wildcard also specifies a relation.
+        """
         # Normalize and validate inputs
         if isinstance(namespace, str):
             namespace = NamespaceId(namespace)
@@ -43,14 +47,17 @@ class SubjectReference:
 
     @property
     def namespace(self) -> NamespaceId:
+        """Return the allowed subject namespace."""
         return self._namespace
 
     @property
     def relation(self) -> Rel | None:
+        """Return the required subject-set relation, if any."""
         return self._relation
 
     @property
     def wildcard(self) -> bool:
+        """Return whether this reference allows the namespace wildcard."""
         return self._wildcard
 
     def allows(
@@ -60,7 +67,7 @@ class SubjectReference:
         entity_id: str,
         relation: str | None,
     ) -> bool:
-        """Return whether a concrete tuple subject matches this schema reference."""
+        """Return whether a concrete tuple subject matches this reference."""
         if self.namespace.value != namespace:
             return False
         if self.wildcard:
@@ -72,6 +79,7 @@ class SubjectReference:
         return relation is not None and self.relation.value == relation
 
     def to_dict(self) -> dict:
+        """Serialize the subject reference to its schema dictionary."""
         return {
             "namespace": self.namespace.value,
             "relation": (self.relation.value if self.relation else None),
@@ -94,6 +102,7 @@ class SubjectReference:
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
+        """Deserialize a subject reference from its schema dictionary."""
         relation = data.get("relation")
         return cls(
             namespace=NamespaceId(data["namespace"]),

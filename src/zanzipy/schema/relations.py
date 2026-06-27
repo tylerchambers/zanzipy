@@ -11,9 +11,10 @@ if TYPE_CHECKING:
 
 
 class RelationDef:
-    """Defines a relation: allowed subject types and optional rewrite.
+    """Relation definition with allowed subjects and optional rewrite.
 
-    Note: Relations must declare at least one allowed subject.
+    Relations must declare at least one allowed subject reference; names are
+    validated with the same rules as tuple relation names.
     """
 
     __slots__ = ("_allowed_subjects", "_description", "_name", "_rewrite")
@@ -26,6 +27,12 @@ class RelationDef:
         rewrite: RewriteRule | None = None,
         description: str | None = None,
     ) -> None:
+        """Create a relation definition and normalize allowed subjects.
+
+        Raises:
+            ValueError: If no allowed subject references are declared.
+            TypeError: If any allowed subject is not a ``SubjectReference``.
+        """
         # Validate relation name
         Rel(name)
         normalized = self._normalize_subject_references(allowed_subjects)
@@ -39,18 +46,22 @@ class RelationDef:
 
     @property
     def name(self) -> str:
+        """Return the validated relation name."""
         return self._name
 
     @property
     def allowed_subjects(self) -> tuple[SubjectReference, ...]:
+        """Return allowed subject references as an immutable tuple."""
         return self._allowed_subjects
 
     @property
     def rewrite(self) -> RewriteRule | None:
+        """Return the rewrite rule, or ``None`` for direct stored tuples."""
         return self._rewrite
 
     @property
     def description(self) -> str | None:
+        """Return the optional human-readable relation description."""
         return self._description
 
     @staticmethod
@@ -74,6 +85,7 @@ class RelationDef:
         rewrite: RewriteRule | None = None,
         description: str | None = None,
     ) -> RelationDef:
+        """Create a relation definition from one or more subject references."""
         return cls(
             name=name,
             allowed_subjects=subjects,
@@ -82,6 +94,7 @@ class RelationDef:
         )
 
     def to_dict(self) -> dict:
+        """Serialize the relation to its canonical schema dictionary."""
         return {
             "type": SchemaDefinitionType.RELATION,
             "name": self.name,
@@ -92,6 +105,7 @@ class RelationDef:
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
+        """Deserialize a relation definition from its schema dictionary."""
         return cls(
             name=data["name"],
             allowed_subjects=[
