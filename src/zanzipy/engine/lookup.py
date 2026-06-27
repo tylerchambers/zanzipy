@@ -1,6 +1,15 @@
 from typing import TYPE_CHECKING
 
-from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject, TupleFilter
+from zanzipy.engine.checker import CheckEngine
+from zanzipy.models import (
+    CheckRequest,
+    EntityId,
+    NamespaceId,
+    Obj,
+    Relation,
+    Subject,
+    TupleFilter,
+)
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
@@ -32,6 +41,11 @@ class LookupEngine:
         self._relations = relations_repository
         self._max_depth = max_depth
         self._model = authorization_model
+        self._checker = CheckEngine(
+            relations_repository=relations_repository,
+            authorization_model=authorization_model,
+            max_depth=max_depth,
+        )
 
     def lookup_resources(
         self,
@@ -236,6 +250,7 @@ class LookupEngine:
             resource_type=resource_type,
             relation=relation,
         )
+        semantic_parents = self._semantic_parent_refs(reachable_usersets)
         worklist = [
             (direct_subject, depth)
             for direct_subject in self._direct_subject_matches(subject)
@@ -248,6 +263,36 @@ class LookupEngine:
             next_subject += 1
             if current_depth > self._max_depth:
                 continue
+
+            current_ref = (
+                (str(current_subject.namespace), str(current_subject.relation))
+                if current_subject.relation is not None
+                else None
+            )
+            if current_ref is not None:
+                for parent_ref, userset_cost in semantic_parents.get(current_ref, ()):
+                    userset_depth = current_depth + userset_cost
+                    if userset_depth > self._max_depth:
+                        continue
+
+                    userset_subject = Subject.from_parts(
+                        parent_ref[0],
+                        str(current_subject.id),
+                        parent_ref[1],
+                    )
+                    if not self._userset_semantically_reachable(
+                        userset_subject=userset_subject,
+                        subject=subject,
+                        context=context,
+                    ):
+                        continue
+
+                    seen_depth = seen_depths.get(userset_subject)
+                    if seen_depth is not None and seen_depth <= userset_depth:
+                        continue
+
+                    seen_depths[userset_subject] = userset_depth
+                    worklist.append((userset_subject, userset_depth))
 
             exact_subject_filter = TupleFilter.from_subject(current_subject)
             for relation_tuple in self._relations.read_reverse(
@@ -271,15 +316,22 @@ class LookupEngine:
                 if userset_ref not in reachable_usersets:
                     continue
 
-                userset_depth = current_depth + 1
-                if userset_depth > self._max_depth:
-                    continue
-
                 userset_subject = Subject.from_parts(
                     str(relation_tuple.object.namespace),
                     str(relation_tuple.object.id),
                     target_relation,
                 )
+                if not self._userset_semantically_reachable(
+                    userset_subject=userset_subject,
+                    subject=subject,
+                    context=context,
+                ):
+                    continue
+
+                userset_depth = current_depth + 1
+                if userset_depth > self._max_depth:
+                    continue
+
                 seen_depth = seen_depths.get(userset_subject)
                 if seen_depth is not None and seen_depth <= userset_depth:
                     continue
@@ -346,17 +398,109 @@ class LookupEngine:
         while next_ref < len(worklist):
             subject_type, subject_relation = worklist[next_ref]
             next_ref += 1
+
             nested_refs = self._model.allowed_userset_refs(
                 resource_type=subject_type,
                 relation=subject_relation,
             )
-            for nested_ref in nested_refs:
+            dependency_refs = self._rewrite_dependency_refs(
+                resource_type=subject_type,
+                relation=subject_relation,
+            )
+            for nested_ref in (*nested_refs, *dependency_refs):
                 if nested_ref in reachable:
                     continue
                 reachable.add(nested_ref)
                 worklist.append(nested_ref)
 
         return reachable
+
+    def _semantic_parent_refs(
+        self,
+        userset_refs: set[tuple[str, str]],
+    ) -> dict[tuple[str, str], tuple[tuple[tuple[str, str], int], ...]]:
+        parents: dict[tuple[str, str], list[tuple[tuple[str, str], int]]] = {}
+        for parent_ref in userset_refs:
+            for child_ref, cost in self._rewrite_dependency_refs(
+                resource_type=parent_ref[0],
+                relation=parent_ref[1],
+            ).items():
+                if child_ref not in userset_refs:
+                    continue
+                parents.setdefault(child_ref, []).append((parent_ref, cost))
+
+        return {
+            child_ref: tuple(parent_refs) for child_ref, parent_refs in parents.items()
+        }
+
+    def _rewrite_dependency_refs(
+        self,
+        *,
+        resource_type: str,
+        relation: str,
+    ) -> dict[tuple[str, str], int]:
+        dependencies: dict[tuple[str, str], int] = {}
+        for child_relation, cost in self._rewrite_dependencies(
+            self._model.resolve(resource_type, relation),
+            cost=0,
+        ).items():
+            child_ref = (resource_type, child_relation)
+            existing_cost = dependencies.get(child_ref)
+            if existing_cost is None or cost < existing_cost:
+                dependencies[child_ref] = cost
+        return dependencies
+
+    def _rewrite_dependencies(
+        self,
+        rewrite: RewriteRule,
+        *,
+        cost: int,
+    ) -> dict[str, int]:
+        if isinstance(rewrite, ComputedUsersetRule):
+            return {rewrite.relation: cost + 1}
+
+        if isinstance(rewrite, (UnionRule, IntersectionRule)):
+            dependencies: dict[str, int] = {}
+            for child in rewrite.children:
+                for relation, child_cost in self._rewrite_dependencies(
+                    child,
+                    cost=cost + 1,
+                ).items():
+                    existing_cost = dependencies.get(relation)
+                    if existing_cost is None or child_cost < existing_cost:
+                        dependencies[relation] = child_cost
+            return dependencies
+
+        if isinstance(rewrite, ExclusionRule):
+            return self._rewrite_dependencies(rewrite.base, cost=cost + 1)
+
+        return {}
+
+    def _userset_semantically_reachable(
+        self,
+        *,
+        userset_subject: Subject,
+        subject: Subject,
+        context: ReadContext,
+    ) -> bool:
+        assert userset_subject.relation is not None
+        rewrite = self._model.resolve(
+            str(userset_subject.namespace),
+            str(userset_subject.relation),
+        )
+        if isinstance(rewrite, (DirectRule, ThisRule)):
+            return True
+
+        return self._checker.check(
+            CheckRequest(
+                object_type=str(userset_subject.namespace),
+                object_id=str(userset_subject.id),
+                relation=str(userset_subject.relation),
+                subject_type=str(subject.namespace),
+                subject_id=str(subject.id),
+            ),
+            context=context,
+        ).allowed
 
     @staticmethod
     def _direct_subject_matches(subject: Subject) -> tuple[Subject, ...]:

@@ -220,6 +220,85 @@ def test_lookup_subject_set_cycles_converge_with_seen_nodes() -> None:
     assert client.list_objects("document", "viewer", "user:alice") == ["document:cycle"]
 
 
+def test_lookup_honors_computed_userset_rewrites_in_subject_sets() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        [
+            NamespaceDef(
+                name="group",
+                relations=(
+                    RelationDef.with_subjects("admin", (_user_ref(),)),
+                    RelationDef.with_subjects(
+                        "member",
+                        (_user_ref(),),
+                        rewrite=UnionRule((ComputedUsersetRule("admin"),)),
+                    ),
+                ),
+            ),
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects("viewer", (_group_member_ref(),)),
+                ),
+            ),
+        ]
+    )
+    client = ZanzibarClient(
+        relations_repository=InMemoryRelationRepository(),
+        schema=registry,
+    )
+    client.write_many(
+        [
+            ("group:eng", "admin", "user:alice"),
+            ("document:spec", "viewer", "group:eng#member"),
+        ]
+    )
+
+    assert client.check("document:spec", "viewer", "user:alice") is True
+    assert client.list_objects("document", "viewer", "user:alice") == ["document:spec"]
+
+
+def test_lookup_validates_non_direct_userset_rewrites_before_traversal() -> None:
+    registry = SchemaRegistry()
+    registry.register_many(
+        [
+            NamespaceDef(
+                name="group",
+                relations=(
+                    RelationDef.with_subjects(
+                        "member",
+                        (_user_ref(),),
+                        rewrite=ExclusionRule(
+                            ThisRule(), ComputedUsersetRule("banned")
+                        ),
+                    ),
+                    RelationDef.with_subjects("banned", (_user_ref(),)),
+                ),
+            ),
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects("viewer", (_group_member_ref(),)),
+                ),
+            ),
+        ]
+    )
+    client = ZanzibarClient(
+        relations_repository=InMemoryRelationRepository(),
+        schema=registry,
+    )
+    client.write_many(
+        [
+            ("group:eng", "member", "user:alice"),
+            ("group:eng", "banned", "user:alice"),
+            ("document:spec", "viewer", "group:eng#member"),
+        ]
+    )
+
+    assert client.check("document:spec", "viewer", "user:alice") is False
+    assert client.list_objects("document", "viewer", "user:alice") == []
+
+
 def test_lookup_walks_nested_tuple_to_userset_edges_backwards() -> None:
     registry = SchemaRegistry()
     registry.register_many(
