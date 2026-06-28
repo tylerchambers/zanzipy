@@ -73,6 +73,11 @@ class AuthorizableResource:
         subject_set: SubjectSet = engine.expand(
             permission=permission, resource=self.get_resource_ref()
         )
+        if subject_set.wildcard_exclusions:
+            raise ValueError(
+                "who_can cannot represent wildcard subjects with exclusions; "
+                "use expand() to inspect wildcard_exclusions"
+            )
         # Convert canonical strings to Subject objects
         from zanzipy.models import Subject as _Subject
 

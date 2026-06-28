@@ -1,6 +1,6 @@
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from zanzipy.engine.expanded_subjects import SubjectSet, _ExpandedSubjects
 from zanzipy.engine.rewrite_dispatch import RewriteRuleDispatcher
 from zanzipy.models import EntityId, NamespaceId, Obj, Relation, Subject, TupleFilter
 
@@ -18,39 +18,6 @@ if TYPE_CHECKING:
     )
     from zanzipy.storage.repos.abstract.relations import RelationRepository
     from zanzipy.storage.revision import ReadContext
-
-
-@dataclass(frozen=True, slots=True)
-class SubjectSet:
-    """Result of expanding a relation: aggregated subjects.
-
-    - users: direct user subjects in canonical string form (e.g., "user:alice")
-    - usersets: subject-set anchors or non-user direct subjects
-    """
-
-    users: set[str] = field(default_factory=set)
-    usersets: set[str] = field(default_factory=set)
-
-    def union(self, other: SubjectSet) -> SubjectSet:
-        """Return the bucket-wise union of two expanded subject sets."""
-        return SubjectSet(
-            users=set(self.users | other.users),
-            usersets=set(self.usersets | other.usersets),
-        )
-
-    def intersection(self, other: SubjectSet) -> SubjectSet:
-        """Return the bucket-wise intersection of two expanded subject sets."""
-        return SubjectSet(
-            users=set(self.users & other.users),
-            usersets=set(self.usersets & other.usersets),
-        )
-
-    def difference(self, other: SubjectSet) -> SubjectSet:
-        """Return the bucket-wise difference of two expanded subject sets."""
-        return SubjectSet(
-            users=set(self.users - other.users),
-            usersets=set(self.usersets - other.usersets),
-        )
 
 
 class _ExpansionIncomplete(Exception):
@@ -275,7 +242,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         current_relation: str,
         fail_on_incomplete: bool,
     ) -> SubjectSet:
-        accum: set[str] | None = None
+        accum: _ExpandedSubjects | None = None
         for child in rewrite.children:
             child_set = self._evaluate_rule(
                 rewrite=child,
@@ -297,7 +264,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
             accum = (
                 child_subjects if accum is None else accum.intersection(child_subjects)
             )
-        return self._subject_set_from_subjects(accum or set())
+        return SubjectSet() if accum is None else accum.to_subject_set()
 
     def _evaluate_exclusion_rule(
         self,
@@ -350,7 +317,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
             if fail_on_incomplete:
                 raise
             return SubjectSet()
-        return self._subject_set_from_subjects(base_subjects - subtract_subjects)
+        return base_subjects.difference(subtract_subjects).to_subject_set()
 
     def _materialize(
         self,
@@ -360,13 +327,18 @@ class ExpansionEngine(RewriteRuleDispatcher):
         depth: int,
         visited: set[tuple[str, str, str]],
         fail_on_incomplete: bool,
-    ) -> set[str]:
-        """Resolve userset anchors into concrete rendered subjects."""
-        subjects = set(subject_set.users)
+    ) -> _ExpandedSubjects:
+        """Resolve userset anchors into semantic rendered subject sets."""
+        subjects = _ExpandedSubjects.from_rendered_subjects(
+            set(subject_set.users),
+            subject_set.wildcard_exclusions,
+        )
         for rendered in subject_set.usersets:
             subject = Subject.from_string(rendered)
             if subject.relation is None:
-                subjects.add(rendered)
+                subjects = subjects.union(
+                    _ExpandedSubjects.from_rendered_subjects({rendered})
+                )
                 continue
 
             expanded = self._expand_recursive(
@@ -378,7 +350,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
                 visited=visited,
                 fail_on_incomplete=fail_on_incomplete,
             )
-            subjects.update(
+            subjects = subjects.union(
                 self._materialize(
                     expanded,
                     context=context,
@@ -392,15 +364,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
     @staticmethod
     def _subject_set_from_subjects(subjects: set[str]) -> SubjectSet:
         """Split rendered subjects back into user and userset buckets."""
-        users: set[str] = set()
-        usersets: set[str] = set()
-        for rendered in subjects:
-            subject = Subject.from_string(rendered)
-            if subject.relation is None and str(subject.namespace) == "user":
-                users.add(rendered)
-            else:
-                usersets.add(rendered)
-        return SubjectSet(users=users, usersets=usersets)
+        return _ExpandedSubjects.from_rendered_subjects(subjects).to_subject_set()
 
     def _expand_direct(
         self,
