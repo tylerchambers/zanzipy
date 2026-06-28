@@ -53,6 +53,10 @@ class SubjectSet:
         )
 
 
+class _ExpansionIncomplete(Exception):
+    """Raised internally when a strict expansion branch is truncated."""
+
+
 class ExpansionEngine(RewriteRuleDispatcher):
     """Expands a relation/permission into the set of subjects that grant it.
 
@@ -111,10 +115,13 @@ class ExpansionEngine(RewriteRuleDispatcher):
         context: ReadContext,
         depth: int,
         visited: set[tuple[str, str, str]],
+        fail_on_incomplete: bool = False,
     ) -> SubjectSet:
         """Expand one relation while treating ``visited`` as an active stack."""
         key = (object_type, object_id, relation)
         if key in visited or depth > self._max_depth:
+            if fail_on_incomplete:
+                raise _ExpansionIncomplete
             return SubjectSet()
 
         visited.add(key)
@@ -128,6 +135,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
                 depth=depth,
                 visited=visited,
                 current_relation=relation,
+                fail_on_incomplete=fail_on_incomplete,
             )
         finally:
             visited.remove(key)
@@ -142,6 +150,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         depth: int,
         visited: set[tuple[str, str, str]],
         current_relation: str,
+        fail_on_incomplete: bool,
     ) -> SubjectSet:
         """Evaluate one rewrite rule against the current object."""
 
@@ -160,6 +169,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
             depth=depth,
             visited=visited,
             current_relation=current_relation,
+            fail_on_incomplete=fail_on_incomplete,
         )
 
     def _evaluate_direct_or_this_rule(
@@ -172,6 +182,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         depth: int,
         visited: set[tuple[str, str, str]],
         current_relation: str,
+        fail_on_incomplete: bool,
     ) -> SubjectSet:
         return self._expand_direct(
             object_type=object_type,
@@ -190,6 +201,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         depth: int,
         visited: set[tuple[str, str, str]],
         current_relation: str,
+        fail_on_incomplete: bool,
     ) -> SubjectSet:
         return self._expand_recursive(
             object_type=object_type,
@@ -198,6 +210,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
             context=context,
             depth=depth + 1,
             visited=visited,
+            fail_on_incomplete=fail_on_incomplete,
         )
 
     def _evaluate_tuple_to_userset_rule(
@@ -210,6 +223,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         depth: int,
         visited: set[tuple[str, str, str]],
         current_relation: str,
+        fail_on_incomplete: bool,
     ) -> SubjectSet:
         return self._expand_tuple_to_userset(
             object_type=object_type,
@@ -219,6 +233,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
             context=context,
             depth=depth,
             visited=visited,
+            fail_on_incomplete=fail_on_incomplete,
         )
 
     def _evaluate_union_rule(
@@ -231,6 +246,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         depth: int,
         visited: set[tuple[str, str, str]],
         current_relation: str,
+        fail_on_incomplete: bool,
     ) -> SubjectSet:
         result = SubjectSet()
         for child in rewrite.children:
@@ -242,6 +258,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
                 depth=depth + 1,
                 visited=visited,
                 current_relation=current_relation,
+                fail_on_incomplete=fail_on_incomplete,
             )
             result = result.union(child_set)
         return result
@@ -256,6 +273,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         depth: int,
         visited: set[tuple[str, str, str]],
         current_relation: str,
+        fail_on_incomplete: bool,
     ) -> SubjectSet:
         accum: set[str] | None = None
         for child in rewrite.children:
@@ -267,12 +285,14 @@ class ExpansionEngine(RewriteRuleDispatcher):
                 depth=depth + 1,
                 visited=visited,
                 current_relation=current_relation,
+                fail_on_incomplete=fail_on_incomplete,
             )
             child_subjects = self._materialize(
                 child_set,
                 context=context,
                 depth=depth + 1,
                 visited=visited,
+                fail_on_incomplete=fail_on_incomplete,
             )
             accum = (
                 child_subjects if accum is None else accum.intersection(child_subjects)
@@ -289,6 +309,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         depth: int,
         visited: set[tuple[str, str, str]],
         current_relation: str,
+        fail_on_incomplete: bool,
     ) -> SubjectSet:
         base = self._evaluate_rule(
             rewrite=rewrite.base,
@@ -298,28 +319,37 @@ class ExpansionEngine(RewriteRuleDispatcher):
             depth=depth + 1,
             visited=visited,
             current_relation=current_relation,
+            fail_on_incomplete=fail_on_incomplete,
         )
-        subtract = self._evaluate_rule(
-            rewrite=rewrite.subtract,
-            object_type=object_type,
-            object_id=object_id,
-            context=context,
-            depth=depth + 1,
-            visited=visited,
-            current_relation=current_relation,
-        )
-        base_subjects = self._materialize(
-            base,
-            context=context,
-            depth=depth + 1,
-            visited=visited,
-        )
-        subtract_subjects = self._materialize(
-            subtract,
-            context=context,
-            depth=depth + 1,
-            visited=visited,
-        )
+        try:
+            subtract = self._evaluate_rule(
+                rewrite=rewrite.subtract,
+                object_type=object_type,
+                object_id=object_id,
+                context=context,
+                depth=depth + 1,
+                visited=visited,
+                current_relation=current_relation,
+                fail_on_incomplete=True,
+            )
+            base_subjects = self._materialize(
+                base,
+                context=context,
+                depth=depth + 1,
+                visited=visited,
+                fail_on_incomplete=fail_on_incomplete,
+            )
+            subtract_subjects = self._materialize(
+                subtract,
+                context=context,
+                depth=depth + 1,
+                visited=visited,
+                fail_on_incomplete=True,
+            )
+        except _ExpansionIncomplete:
+            if fail_on_incomplete:
+                raise
+            return SubjectSet()
         return self._subject_set_from_subjects(base_subjects - subtract_subjects)
 
     def _materialize(
@@ -329,6 +359,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         context: ReadContext,
         depth: int,
         visited: set[tuple[str, str, str]],
+        fail_on_incomplete: bool,
     ) -> set[str]:
         """Resolve userset anchors into concrete rendered subjects."""
         subjects = set(subject_set.users)
@@ -345,6 +376,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
                 context=context,
                 depth=depth + 1,
                 visited=visited,
+                fail_on_incomplete=fail_on_incomplete,
             )
             subjects.update(
                 self._materialize(
@@ -352,6 +384,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
                     context=context,
                     depth=depth + 1,
                     visited=visited,
+                    fail_on_incomplete=fail_on_incomplete,
                 )
             )
         return subjects
@@ -407,6 +440,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
         context: ReadContext,
         depth: int,
         visited: set[tuple[str, str, str]],
+        fail_on_incomplete: bool,
     ) -> SubjectSet:
         """Follow tuple-to-userset edges and union the target expansions."""
         obj = Obj.from_parts(object_type, object_id)
@@ -426,6 +460,7 @@ class ExpansionEngine(RewriteRuleDispatcher):
                 context=context,
                 depth=depth + 1,
                 visited=visited,
+                fail_on_incomplete=fail_on_incomplete,
             )
             result = result.union(child)
         return result

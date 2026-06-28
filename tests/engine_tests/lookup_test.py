@@ -665,6 +665,39 @@ class TestLookupRewriteSemantics:
             "document:owned",
         ]
 
+    def test_lookup_exclusion_subtract_depth_cutoff_fails_closed(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (_user_ref(),),
+                        rewrite=ExclusionRule(
+                            ThisRule(),
+                            ComputedUsersetRule("blocked"),
+                        ),
+                    ),
+                    RelationDef.with_subjects("blocked", (_user_ref(),)),
+                ),
+            )
+        )
+        client = ZanzibarClient(
+            relations_repository=InMemoryRelationRepository(),
+            schema=registry,
+            max_depth=1,
+        )
+        client.write_many(
+            [
+                ("document:secret", "viewer", "user:alice"),
+                ("document:secret", "blocked", "user:alice"),
+            ]
+        )
+
+        assert client.check("document:secret", "viewer", "user:alice") is False
+        assert client.list_objects("document", "viewer", "user:alice") == []
+
     def test_lookup_cycle_matches_check_for_path_local_exclusion_rewrite(self) -> None:
         registry = SchemaRegistry()
         registry.register(
@@ -707,8 +740,8 @@ class TestLookupRewriteSemantics:
             if client.check(f"document:{object_id}", "viewer", "user:alice")
         ]
 
-        assert checked == ["document:allowed"]
-        assert client.list_objects("document", "viewer", "user:alice") == checked
+        assert checked == []
+        assert client.list_objects("document", "viewer", "user:alice") == []
 
     def test_lookup_filters_complex_userset_candidates_with_traversal_depth(
         self,
@@ -779,7 +812,7 @@ class TestLookupRewriteSemantics:
             "document:spec"
         ]
 
-    def test_lookup_userset_subqueries_track_their_own_rewrite_cycles(self) -> None:
+    def test_lookup_userset_subquery_subtract_cycles_fail_closed(self) -> None:
         registry = SchemaRegistry()
         registry.register_many(
             [
@@ -814,11 +847,8 @@ class TestLookupRewriteSemantics:
                 ("document:doc", "viewer", "group:eng#member"),
             ]
         )
-
-        assert client.check("document:doc", "viewer", "user:alice") is True
-        assert client.list_objects("document", "viewer", "user:alice") == [
-            "document:doc"
-        ]
+        assert client.check("document:doc", "viewer", "user:alice") is False
+        assert client.list_objects("document", "viewer", "user:alice") == []
 
     def test_tuple_to_userset_lookup_uses_parent_reverse_reads(self) -> None:
         registry = SchemaRegistry()

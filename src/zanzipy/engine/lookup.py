@@ -134,6 +134,9 @@ class LookupEngine(RewriteRuleDispatcher):
             except ValueError:
                 continue
 
+            if self._rewrite_requires_canonical_filter(rewrite):
+                return True
+
             if self._relation_uses_complex_userset(
                 resource_type=current_resource_type,
                 relation=current_relation,
@@ -170,6 +173,17 @@ class LookupEngine(RewriteRuleDispatcher):
             if not isinstance(userset_rewrite, (DirectRule, ThisRule)):
                 return True
 
+        return False
+
+    def _rewrite_requires_canonical_filter(self, rewrite: RewriteRule) -> bool:
+        """Return whether reverse candidates need checker confirmation."""
+        if isinstance(rewrite, ExclusionRule):
+            return True
+        if isinstance(rewrite, (UnionRule, IntersectionRule)):
+            return any(
+                self._rewrite_requires_canonical_filter(child)
+                for child in rewrite.children
+            )
         return False
 
     def _rewrite_relation_refs(

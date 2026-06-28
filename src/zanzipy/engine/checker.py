@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from zanzipy.engine.rewrite_dispatch import RewriteRuleDispatcher
@@ -33,6 +34,14 @@ class _Counters:
 
     tuples_examined: int = 0
     max_depth_reached: int = 0
+
+
+class _CheckResult(Enum):
+    """Internal tri-state result for recursive authorization traversal."""
+
+    ALLOW = 1
+    DENY = 2
+    UNKNOWN = 3
 
 
 class CheckEngine(RewriteRuleDispatcher):
@@ -76,7 +85,7 @@ class CheckEngine(RewriteRuleDispatcher):
             )
         counters = _Counters()
 
-        allowed = self._check_recursive(
+        result = self._check_recursive(
             object_type=request.object_type,
             object_id=request.object_id,
             relation=request.relation,
@@ -90,7 +99,7 @@ class CheckEngine(RewriteRuleDispatcher):
         )
 
         return CheckResponse(
-            allowed=allowed,
+            allowed=result is _CheckResult.ALLOW,
             debug_trace=debug_trace,
             depth_reached=counters.max_depth_reached,
             tuples_examined=counters.tuples_examined,
@@ -109,17 +118,19 @@ class CheckEngine(RewriteRuleDispatcher):
         visited: set[tuple[str, str, str, str, str]],
         debug_trace: list[str] | None,
         counters: _Counters,
-    ) -> bool:
+    ) -> _CheckResult:
         """Internal recursive check with cycle detection and depth limiting."""
 
         counters.max_depth_reached = max(counters.max_depth_reached, depth)
         key = (object_type, object_id, relation, subject_type, subject_id)
         if key in visited:
-            return False
+            if debug_trace is not None:
+                debug_trace.append(f"{'  ' * depth}Cycle detected")
+            return _CheckResult.UNKNOWN
         if depth > self._max_depth:
             if debug_trace is not None:
                 debug_trace.append(f"{'  ' * depth}Max depth reached: {depth}")
-            return False
+            return _CheckResult.UNKNOWN
 
         visited.add(key)
         try:
@@ -136,7 +147,7 @@ class CheckEngine(RewriteRuleDispatcher):
             except ValueError as exc:
                 if debug_trace is not None:
                     debug_trace.append(f"{'  ' * depth}Error: {exc}")
-                return False
+                return _CheckResult.UNKNOWN
 
             return self._evaluate_rule(
                 rewrite=rewrite,
@@ -168,7 +179,7 @@ class CheckEngine(RewriteRuleDispatcher):
         debug_trace: list[str] | None,
         counters: _Counters,
         current_relation: str,
-    ) -> bool:
+    ) -> _CheckResult:
         """Evaluate one rewrite rule against the current object."""
 
         return self._dispatch_rewrite_rule(
@@ -206,7 +217,7 @@ class CheckEngine(RewriteRuleDispatcher):
         debug_trace: list[str] | None,
         counters: _Counters,
         current_relation: str,
-    ) -> bool:
+    ) -> _CheckResult:
         return self._check_direct(
             object_type=object_type,
             object_id=object_id,
@@ -234,7 +245,7 @@ class CheckEngine(RewriteRuleDispatcher):
         debug_trace: list[str] | None,
         counters: _Counters,
         current_relation: str,
-    ) -> bool:
+    ) -> _CheckResult:
         return self._check_recursive(
             object_type=object_type,
             object_id=object_id,
@@ -262,7 +273,7 @@ class CheckEngine(RewriteRuleDispatcher):
         debug_trace: list[str] | None,
         counters: _Counters,
         current_relation: str,
-    ) -> bool:
+    ) -> _CheckResult:
         return self._check_tuple_to_userset(
             object_type=object_type,
             object_id=object_id,
@@ -291,9 +302,10 @@ class CheckEngine(RewriteRuleDispatcher):
         debug_trace: list[str] | None,
         counters: _Counters,
         current_relation: str,
-    ) -> bool:
+    ) -> _CheckResult:
+        saw_unknown = False
         for child in rewrite.children:
-            if self._evaluate_rule(
+            result = self._evaluate_rule(
                 rewrite=child,
                 object_type=object_type,
                 object_id=object_id,
@@ -305,9 +317,12 @@ class CheckEngine(RewriteRuleDispatcher):
                 debug_trace=debug_trace,
                 counters=counters,
                 current_relation=current_relation,
-            ):
-                return True
-        return False
+            )
+            if result is _CheckResult.ALLOW:
+                return _CheckResult.ALLOW
+            if result is _CheckResult.UNKNOWN:
+                saw_unknown = True
+        return _CheckResult.UNKNOWN if saw_unknown else _CheckResult.DENY
 
     def _evaluate_intersection_rule(
         self,
@@ -323,9 +338,10 @@ class CheckEngine(RewriteRuleDispatcher):
         debug_trace: list[str] | None,
         counters: _Counters,
         current_relation: str,
-    ) -> bool:
+    ) -> _CheckResult:
+        saw_unknown = False
         for child in rewrite.children:
-            ok = self._evaluate_rule(
+            result = self._evaluate_rule(
                 rewrite=child,
                 object_type=object_type,
                 object_id=object_id,
@@ -338,9 +354,11 @@ class CheckEngine(RewriteRuleDispatcher):
                 counters=counters,
                 current_relation=current_relation,
             )
-            if not ok:
-                return False
-        return True
+            if result is _CheckResult.DENY:
+                return _CheckResult.DENY
+            if result is _CheckResult.UNKNOWN:
+                saw_unknown = True
+        return _CheckResult.UNKNOWN if saw_unknown else _CheckResult.ALLOW
 
     def _evaluate_exclusion_rule(
         self,
@@ -356,8 +374,8 @@ class CheckEngine(RewriteRuleDispatcher):
         debug_trace: list[str] | None,
         counters: _Counters,
         current_relation: str,
-    ) -> bool:
-        base_ok = self._evaluate_rule(
+    ) -> _CheckResult:
+        base_result = self._evaluate_rule(
             rewrite=rewrite.base,
             object_type=object_type,
             object_id=object_id,
@@ -370,9 +388,12 @@ class CheckEngine(RewriteRuleDispatcher):
             counters=counters,
             current_relation=current_relation,
         )
-        if not base_ok:
-            return False
-        subtract_ok = self._evaluate_rule(
+        if base_result is _CheckResult.DENY:
+            return _CheckResult.DENY
+        if base_result is _CheckResult.UNKNOWN:
+            return _CheckResult.UNKNOWN
+
+        subtract_result = self._evaluate_rule(
             rewrite=rewrite.subtract,
             object_type=object_type,
             object_id=object_id,
@@ -385,7 +406,11 @@ class CheckEngine(RewriteRuleDispatcher):
             counters=counters,
             current_relation=current_relation,
         )
-        return not subtract_ok
+        if subtract_result is _CheckResult.ALLOW:
+            return _CheckResult.DENY
+        if subtract_result is _CheckResult.UNKNOWN:
+            return _CheckResult.UNKNOWN
+        return _CheckResult.ALLOW
 
     def _check_direct(
         self,
@@ -400,7 +425,7 @@ class CheckEngine(RewriteRuleDispatcher):
         debug_trace: list[str] | None,
         counters: _Counters,
         effective_relation: str,
-    ) -> bool:
+    ) -> _CheckResult:
         """Check direct tuples and expand usersets.
 
         Logic:
@@ -410,6 +435,7 @@ class CheckEngine(RewriteRuleDispatcher):
         """
 
         obj = Obj(NamespaceId(object_type), EntityId(object_id))
+        saw_unknown = False
         for t in self._relations.read(TupleFilter.from_object(obj), context=context):
             # Filter matching relation on the object
             if str(t.relation) != effective_relation:
@@ -425,24 +451,28 @@ class CheckEngine(RewriteRuleDispatcher):
                         debug_trace.append(
                             f"{'  ' * (depth + 1)}matched direct tuple: {t}"
                         )
-                    return True
+                    return _CheckResult.ALLOW
 
             # Subject set: recurse on the subject's relation
-            if t.subject.relation is not None and self._check_recursive(
-                object_type=str(t.subject.namespace),
-                object_id=str(t.subject.id),
-                relation=str(t.subject.relation),
-                subject_type=subject_type,
-                subject_id=subject_id,
-                context=context,
-                depth=depth + 1,
-                visited=visited,
-                debug_trace=debug_trace,
-                counters=counters,
-            ):
-                return True
+            if t.subject.relation is not None:
+                result = self._check_recursive(
+                    object_type=str(t.subject.namespace),
+                    object_id=str(t.subject.id),
+                    relation=str(t.subject.relation),
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    context=context,
+                    depth=depth + 1,
+                    visited=visited,
+                    debug_trace=debug_trace,
+                    counters=counters,
+                )
+                if result is _CheckResult.ALLOW:
+                    return _CheckResult.ALLOW
+                if result is _CheckResult.UNKNOWN:
+                    saw_unknown = True
 
-        return False
+        return _CheckResult.UNKNOWN if saw_unknown else _CheckResult.DENY
 
     def _check_tuple_to_userset(
         self,
@@ -458,7 +488,7 @@ class CheckEngine(RewriteRuleDispatcher):
         visited: set[tuple[str, str, str, str, str]],
         debug_trace: list[str] | None,
         counters: _Counters,
-    ) -> bool:
+    ) -> _CheckResult:
         """Evaluate a tuple-to-userset step.
 
         Follow relation ``tuple_relation`` from the current object to subjects
@@ -467,6 +497,7 @@ class CheckEngine(RewriteRuleDispatcher):
         """
 
         obj = Obj(NamespaceId(object_type), EntityId(object_id))
+        saw_unknown = False
         for t in self._relations.read(TupleFilter.from_object(obj), context=context):
             if str(t.relation) != tuple_relation:
                 continue
@@ -477,7 +508,7 @@ class CheckEngine(RewriteRuleDispatcher):
             if t.subject.relation is not None:
                 continue
 
-            if self._check_recursive(
+            result = self._check_recursive(
                 object_type=str(t.subject.namespace),
                 object_id=str(t.subject.id),
                 relation=computed_relation,
@@ -488,7 +519,10 @@ class CheckEngine(RewriteRuleDispatcher):
                 visited=visited,
                 debug_trace=debug_trace,
                 counters=counters,
-            ):
-                return True
+            )
+            if result is _CheckResult.ALLOW:
+                return _CheckResult.ALLOW
+            if result is _CheckResult.UNKNOWN:
+                saw_unknown = True
 
-        return False
+        return _CheckResult.UNKNOWN if saw_unknown else _CheckResult.DENY

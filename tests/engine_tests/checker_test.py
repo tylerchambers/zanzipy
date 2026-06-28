@@ -10,6 +10,7 @@ from zanzipy.schema.rules import (
     ComputedUsersetRule,
     ExclusionRule,
     IntersectionRule,
+    ThisRule,
     TupleToUsersetRule,
     UnionRule,
 )
@@ -243,6 +244,111 @@ class TestCheckEngine:
         assert engine.check(req, context=_context(repo)).allowed is True
         req = CheckRequest.from_strings("document:doc3", "can_comment", "user:carol")
         assert engine.check(req, context=_context(repo)).allowed is False
+
+    def test_exclusion_subtract_depth_cutoff_fails_closed(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                        rewrite=ExclusionRule(
+                            ThisRule(),
+                            ComputedUsersetRule("blocked"),
+                        ),
+                    ),
+                    RelationDef.with_subjects(
+                        "blocked",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                    ),
+                ),
+            )
+        )
+
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#viewer@user:alice")
+                ),
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#blocked@user:alice")
+                ),
+            ),
+        )
+
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+            max_depth=1,
+            enable_debug=True,
+        )
+
+        res = engine.check(
+            CheckRequest.from_strings("document:doc", "viewer", "user:alice"),
+            context=_context(repo),
+        )
+        assert res.allowed is False
+        assert res.debug_trace is not None
+        assert any("Max depth reached" in line for line in res.debug_trace)
+
+        complete_engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+            max_depth=25,
+        )
+        assert (
+            complete_engine.check(
+                CheckRequest.from_strings("document:doc", "viewer", "user:alice"),
+                context=_context(repo),
+            ).allowed
+            is False
+        )
+
+    def test_exclusion_subtract_cycle_fails_closed(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                        rewrite=ExclusionRule(
+                            ThisRule(),
+                            ComputedUsersetRule("viewer"),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#viewer@user:alice")
+                ),
+            ),
+        )
+
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+            enable_debug=True,
+        )
+
+        res = engine.check(
+            CheckRequest.from_strings("document:doc", "viewer", "user:alice"),
+            context=_context(repo),
+        )
+        assert res.allowed is False
+        assert res.debug_trace is not None
+        assert any("Cycle detected" in line for line in res.debug_trace)
 
     def test_reused_relation_operand_is_path_local(self) -> None:
         registry = SchemaRegistry()
