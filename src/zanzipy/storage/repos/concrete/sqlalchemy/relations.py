@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 _TABLE_NAME = "relation_tuples"
 _REVISIONS_TABLE_NAME = "revisions"
+_SUPPORTED_SCHEMA_DIALECTS = frozenset(("postgresql", "sqlite"))
 
 
 class SQLAlchemyRelationRepository(RelationWriteValidationMixin, RelationRepository):
@@ -137,6 +138,13 @@ class SQLAlchemyRelationRepository(RelationWriteValidationMixin, RelationReposit
     def create_schema(self, bind: Engine) -> None:
         """Create revision and relation tuple tables plus indexes on ``bind``."""
 
+        dialect_name = bind.dialect.name
+        if dialect_name not in _SUPPORTED_SCHEMA_DIALECTS:
+            raise RuntimeError(
+                "unsupported SQLAlchemy dialect "
+                f"{dialect_name!r}; SQLAlchemyRelationRepository.create_schema "
+                "requires SQLite and PostgreSQL partial unique index support"
+            )
         self._metadata.create_all(bind=bind)
 
     def write(
