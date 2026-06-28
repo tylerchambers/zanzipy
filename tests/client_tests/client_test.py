@@ -14,7 +14,14 @@ from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
-from zanzipy.storage.revision import ReadContext, Revision, TenantId, WriteResult
+from zanzipy.storage.revision import (
+    ReadContext,
+    Revision,
+    TenantId,
+    TupleMutation,
+    WriteContext,
+    WriteResult,
+)
 
 DEFAULT_TENANT = TenantId("default")
 
@@ -163,6 +170,44 @@ class TestZanzibarClient:
         # Unknown relation should surface as ValueError from registry
         with pytest.raises(ValueError, match="Unknown relation or permission"):
             client.write("document:doc1", "missing", "user:alice")
+
+    def test_delete_rejects_permission_and_unknowns(self) -> None:
+        registry = self._base_registry()
+        repo = InMemoryRelationRepository()
+        client = ZanzibarClient(relations_repository=repo, schema=registry)
+
+        client.write("document:doc1", "owner", "user:alice")
+        assert client.check("document:doc1", "can_view", "user:alice") is True
+
+        with pytest.raises(ValueError, match="Cannot delete permission"):
+            client.delete("document:doc1", "can_view", "user:alice")
+        with pytest.raises(ValueError, match="Unknown relation or permission"):
+            client.delete("document:doc1", "missing", "user:alice")
+
+        assert client.check("document:doc1", "can_view", "user:alice") is True
+
+    def test_delete_valid_relation_allows_stale_subject_cleanup(self) -> None:
+        registry = self._base_registry()
+        repo = InMemoryRelationRepository()
+        client = ZanzibarClient(relations_repository=repo, schema=registry)
+        stale_tuple = RelationTuple.from_string("document:doc1#owner@group:eng#member")
+        write = repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (TupleMutation.touch(stale_tuple),),
+        )
+
+        assert (
+            repo.get(stale_tuple, context=ReadContext(DEFAULT_TENANT, write.revision))
+            == stale_tuple
+        )
+
+        delete = client.delete("document:doc1", "owner", "group:eng#member")
+
+        assert delete.revision > write.revision
+        assert (
+            repo.get(stale_tuple, context=ReadContext(DEFAULT_TENANT, delete.revision))
+            is None
+        )
 
     def test_write_subject_validation(self) -> None:
         registry = self._base_registry()

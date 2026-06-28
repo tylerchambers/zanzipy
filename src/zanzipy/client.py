@@ -137,6 +137,7 @@ class ZanzibarClient:
         """Revoke a relation tuple in this client's tenant."""
 
         rt = RelationTuple.from_strings(object, relation, subject)
+        self._validate_relation_against_schema(rt, operation="delete")
         return self.relations_repository.write(
             self._write_context(),
             (TupleMutation.delete(rt),),
@@ -420,15 +421,7 @@ class ZanzibarClient:
     def _validate_tuple_against_schema(self, rt: RelationTuple) -> None:
         """Ensure a tuple write conforms to schema."""
 
-        object_ns = str(rt.object.namespace)
-        relation_name = str(rt.relation)
-
-        definition = self.schema.get_definition(object_ns, relation_name)
-        if not isinstance(definition, RelationDef):
-            raise ValueError(
-                f"Cannot write to permission '{object_ns}:{relation_name}'"
-            )
-
+        definition = self._validate_relation_against_schema(rt, operation="write to")
         allowed_subjects = definition.allowed_subjects
 
         subj_ns = str(rt.subject.namespace)
@@ -446,6 +439,20 @@ class ZanzibarClient:
                 f"got '{subj_ns}{('#' + subj_rel) if subj_rel else ''}', "
                 f"allowed: {rendered}"
             )
+
+    def _validate_relation_against_schema(
+        self, rt: RelationTuple, *, operation: str
+    ) -> RelationDef:
+        """Return a relation definition, rejecting permissions and unknown names."""
+
+        object_ns = str(rt.object.namespace)
+        relation_name = str(rt.relation)
+
+        definition = self.schema.get_definition(object_ns, relation_name)
+        if isinstance(definition, RelationDef):
+            return definition
+
+        raise ValueError(f"Cannot {operation} permission '{object_ns}:{relation_name}'")
 
     @staticmethod
     def _subject_is_allowed(

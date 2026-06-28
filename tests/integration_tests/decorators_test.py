@@ -127,6 +127,33 @@ class TestAuthorizableResourceDecorator:
         assert d.check(alice, "view") is True  # type: ignore[attr-defined]
         assert d.check(bob, "view") is False  # type: ignore[attr-defined]
 
+    def test_revoke_rejects_permission_name(self) -> None:
+        repo = InMemoryRelationRepository()
+        client = ZanzibarClient(relations_repository=repo, schema=_registry())
+        engine = ZanzibarEngine(client)
+        configure_authorization(engine)
+
+        @authorizable_resource("doc")
+        class Doc:
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+        class User(AuthorizableSubject):
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+            def get_subject_dict(self) -> dict:
+                return {"namespace": "user", "id": self.id}
+
+        d = Doc("1")
+        alice = User("alice")
+
+        d.grant(alice, "owner")  # type: ignore[attr-defined]
+        with pytest.raises(ValueError, match="Cannot delete permission"):
+            d.revoke(alice, "view")  # type: ignore[attr-defined]
+
+        assert d.check(alice, "view") is True  # type: ignore[attr-defined]
+
     def test_get_permissions_and_who_can(self) -> None:
         repo = InMemoryRelationRepository()
         client = ZanzibarClient(relations_repository=repo, schema=_registry())
