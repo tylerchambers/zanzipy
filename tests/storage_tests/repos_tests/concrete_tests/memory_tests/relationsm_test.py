@@ -1,7 +1,11 @@
 import pytest
 
 from zanzipy.models import RelationTuple, TupleFilter
-from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
+from zanzipy.storage.repos.concrete.memory.relations import (
+    InMemoryRelationRepository,
+    delete,
+    touch,
+)
 from zanzipy.storage.revision import (
     ReadContext,
     Revision,
@@ -177,3 +181,40 @@ class TestInMemoryRelationRepository:
         write = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
         assert write.revision == Revision(1)
         assert repo.get(t, context=_read_context(write.revision)) == t
+
+    def test_empty_write_initializes_tenant_without_advancing_revision(self) -> None:
+        repo = InMemoryRelationRepository()
+
+        result = repo.write(WriteContext(TENANT), ())
+
+        assert result.revision == Revision(0)
+        assert repo.head_revision(TENANT) == Revision(0)
+        assert list(repo.watch(TENANT, after=Revision(0))) == []
+        assert repo.info() == {
+            "backend": "memory",
+            "head_revisions": {"default": 0},
+            "tuples": 0,
+        }
+
+    def test_watch_rejects_future_revision_for_empty_tenant(self) -> None:
+        repo = InMemoryRelationRepository()
+
+        with pytest.raises(ValueError, match="newer than head"):
+            list(repo.watch(TENANT, after=Revision(1)))
+
+    def test_unknown_stored_snapshot_revision_is_rejected(self) -> None:
+        repo = InMemoryRelationRepository()
+        first = RelationTuple.from_string("document:doc1#viewer@user:alice")
+        second = RelationTuple.from_string("document:doc2#viewer@user:bob")
+        repo.write(WriteContext(TENANT), (TupleMutation.touch(first),))
+        repo.write(WriteContext(TENANT), (TupleMutation.touch(second),))
+        del repo._snapshots[str(TENANT)][1]
+
+        with pytest.raises(ValueError, match="unknown relation repository revision 1"):
+            list(repo.read(TupleFilter(), context=_read_context(Revision(1))))
+
+    def test_touch_and_delete_helpers_create_tuple_mutations(self) -> None:
+        tuple_ = RelationTuple.from_string("document:doc1#viewer@user:alice")
+
+        assert touch(tuple_) == TupleMutation.touch(tuple_)
+        assert delete(tuple_) == TupleMutation.delete(tuple_)

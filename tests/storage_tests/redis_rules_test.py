@@ -102,3 +102,28 @@ class TestRedisCompiledRuleCache:
 
         with pytest.raises(ValueError, match="ttl_seconds"):
             RedisCompiledRuleCache(client=client, ttl_seconds=0)
+
+    def test_ping_close_and_info_delegate_to_client(self) -> None:
+        client = _FakeRedis()
+        cache = RedisCompiledRuleCache(client=client, ttl_seconds=12, codec=_Codec())
+        cache.set("ns", "r", _rule())
+
+        assert cache.ping() is True
+        assert cache.info() == {
+            "backend": "redis",
+            "ttl_seconds": 12,
+            "codec": "_Codec",
+        }
+
+        cache.close()
+
+        assert cache.get("ns", "r") is None
+
+    def test_invalidate_namespace_without_matching_keys_is_noop(self) -> None:
+        client = _FakeRedis()
+        cache = RedisCompiledRuleCache(client=client, ttl_seconds=None, codec=_Codec())
+
+        cache.set("other", "r", _rule())
+        cache.invalidate_namespace("ns")
+
+        assert cache.get("other", "r") is not None

@@ -126,3 +126,74 @@ class TestTupleFilter:
     def test_invalid_filter_fields_are_rejected(self) -> None:
         with pytest.raises(IdentifierValidationError):
             TupleFilter(object_type="bad namespace")
+
+    def test_object_ref_requires_complete_object_fields(self) -> None:
+        assert TupleFilter(object_type="document").object_ref is None
+        assert TupleFilter(object_id="readme").object_ref is None
+        assert str(
+            TupleFilter(object_type="document", object_id="readme").object_ref
+        ) == ("document:readme")
+
+    def test_subject_ref_requires_complete_subject_fields(self) -> None:
+        assert TupleFilter(subject_type="user").subject_ref is None
+        assert TupleFilter(subject_id="alice").subject_ref is None
+        assert str(
+            TupleFilter(subject_type="user", subject_id="alice").subject_ref
+        ) == ("user:alice")
+        assert (
+            str(
+                TupleFilter(
+                    subject_type="group",
+                    subject_id="eng",
+                    subject_relation="member",
+                ).subject_ref
+            )
+            == "group:eng#member"
+        )
+
+    def test_subject_ref_treats_direct_marker_as_direct_subject(self) -> None:
+        subject = TupleFilter(
+            subject_type="group",
+            subject_id="eng",
+            subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
+        ).subject_ref
+
+        assert subject == Subject(NamespaceId("group"), EntityId("eng"))
+
+    def test_bucket_properties_and_subject_bucket_filter(self) -> None:
+        object_bucket = TupleFilter(object_type="document", object_id="readme")
+        subject_filter = TupleFilter(
+            subject_type="group",
+            subject_id="eng",
+            subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
+        )
+
+        assert object_bucket.is_object_bucket is True
+        assert object_bucket.is_subject_bucket is False
+        assert subject_filter.is_object_bucket is False
+        assert subject_filter.is_subject_bucket is True
+        assert subject_filter.subject_bucket_filter() == TupleFilter(
+            subject_type="group",
+            subject_id="eng",
+        )
+
+    def test_subject_bucket_filter_requires_complete_subject(self) -> None:
+        with pytest.raises(ValueError, match="subject type and id"):
+            TupleFilter(subject_type="user").subject_bucket_filter()
+
+    @pytest.mark.parametrize(
+        "field_kwargs",
+        [
+            {"object_id": "bad id"},
+            {"relation": "bad relation"},
+            {"subject_type": "bad namespace"},
+            {"subject_id": "bad id"},
+            {"subject_relation": "bad relation"},
+        ],
+    )
+    def test_invalid_filter_fields_are_rejected_by_field(
+        self,
+        field_kwargs: dict[str, str],
+    ) -> None:
+        with pytest.raises(ValueError, match=r"identifier|id cannot contain"):
+            TupleFilter(**field_kwargs)

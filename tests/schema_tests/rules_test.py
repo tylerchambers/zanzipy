@@ -190,3 +190,29 @@ class TestRewriteRuleFromDict:
     def test_from_dict_unknown_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown RewriteRule type"):
             RewriteRule.from_dict({"type": "unknown"})
+
+    def test_from_dict_rejects_non_mapping_data(self) -> None:
+        with pytest.raises(TypeError, match="dictionary"):
+            RewriteRule.from_dict([])  # type: ignore[arg-type]
+
+
+class TestRewriteRuleValidation:
+    def test_composite_rules_reject_non_rule_children(self) -> None:
+        with pytest.raises(TypeError, match="children must be rewrite rules"):
+            UnionRule(children=(object(),))  # type: ignore[arg-type]
+
+        with pytest.raises(TypeError, match="children must be rewrite rules"):
+            IntersectionRule(children=(object(),))  # type: ignore[arg-type]
+
+    def test_exclusion_rejects_non_rule_operands(self) -> None:
+        with pytest.raises(TypeError, match="base must be a rewrite rule"):
+            ExclusionRule(
+                base=object(),  # type: ignore[arg-type]
+                subtract=ComputedUsersetRule("viewer"),
+            )
+
+        with pytest.raises(TypeError, match="subtract must be a rewrite rule"):
+            ExclusionRule(
+                base=ComputedUsersetRule("viewer"),
+                subtract=object(),  # type: ignore[arg-type]
+            )

@@ -1,8 +1,12 @@
 import pytest
 
 from zanzipy.models import (
+    EntityId,
     EntityIdValidationError,
     IdentifierValidationError,
+    NamespaceId,
+    Obj,
+    Relation,
     Subject,
     SubjectValidationError,
 )
@@ -66,3 +70,39 @@ class TestSubject:
     def test_require_direct_rejects_subject_set(self) -> None:
         with pytest.raises(SubjectValidationError, match="direct subject"):
             Subject.from_string("group:eng#member").require_direct()
+
+    def test_require_direct_returns_direct_subject(self) -> None:
+        subject = Subject.from_string("user:alice")
+
+        assert subject.require_direct() is subject
+
+    def test_from_object_creates_direct_subject(self) -> None:
+        obj = Obj(NamespaceId("document"), EntityId("readme"))
+
+        subject = Subject.from_object(obj)
+
+        assert str(subject) == "document:readme"
+        assert subject.relation is None
+
+    def test_from_object_rejects_non_object(self) -> None:
+        with pytest.raises(TypeError, match="Obj"):
+            Subject.from_object(object())
+
+    def test_direct_instantiation_rejects_raw_components(self) -> None:
+        with pytest.raises(TypeError, match="NamespaceId"):
+            Subject("user", EntityId("alice"))  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="EntityId"):
+            Subject(NamespaceId("user"), "alice")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="Relation or None"):
+            Subject(NamespaceId("user"), EntityId("alice"), "member")  # type: ignore[arg-type]
+
+    def test_from_parts_accepts_none_relation(self) -> None:
+        subject = Subject.from_parts("user", "alice", None)
+
+        assert str(subject) == "user:alice"
+        assert subject.relation is None
+
+    def test_from_parts_accepts_relation_string(self) -> None:
+        subject = Subject.from_parts("group", "eng", "member")
+
+        assert subject.relation == Relation("member")

@@ -1,3 +1,4 @@
+import builtins
 import types
 
 from flask import Flask
@@ -53,3 +54,41 @@ class TestFlaskProxy:
         with app.app_context():
             # Extension should be found and expose client
             assert current_zanzibar.client is app.extensions["zanzibar"].client  # type: ignore[attr-defined]
+
+    def test_proxy_call_invokes_resolved_extension(self) -> None:
+        app = Flask("proxy-call")
+
+        class CallableExtension:
+            def __call__(self, value: str, *, suffix: str) -> str:
+                return f"{value}-{suffix}"
+
+        app.extensions["zanzibar"] = CallableExtension()
+
+        with app.app_context():
+            assert current_zanzibar("ping", suffix="pong") == "ping-pong"
+
+    def test_proxy_reports_missing_extension_on_current_app(self) -> None:
+        app = Flask("proxy-missing-extension")
+
+        with (
+            app.app_context(),
+            pytest.raises(RuntimeError, match="Zanzibar extension not initialized"),
+        ):
+            _ = current_zanzibar.client  # type: ignore[attr-defined]
+
+    def test_find_extension_wraps_flask_import_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import zanzipy.integration.flask.proxy as proxy
+
+        real_import = builtins.__import__
+
+        def import_without_flask(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "flask":
+                raise ImportError("blocked flask import")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", import_without_flask)
+
+        with pytest.raises(RuntimeError, match="Flask is not installed"):
+            proxy._find_extension()

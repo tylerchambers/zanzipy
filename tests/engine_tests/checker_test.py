@@ -71,6 +71,71 @@ class TestCheckEngine:
         res = engine.check(req, context=_context(repo))
         assert res.allowed is False
 
+    def test_direct_relation_allows_namespace_wildcard_subject(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (
+                            SubjectReference.from_dict({"namespace": "user"}),
+                            SubjectReference(namespace="user", wildcard=True),
+                        ),
+                    ),
+                ),
+            )
+        )
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:public#viewer@user:*")
+                ),
+            ),
+        )
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
+
+        req = CheckRequest.from_strings("document:public", "viewer", "user:alice")
+
+        assert engine.check(req, context=_context(repo)).allowed is True
+
+    def test_direct_relation_ignores_subjects_disallowed_by_schema(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                    ),
+                ),
+            )
+        )
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#viewer@service:bot")
+                ),
+            ),
+        )
+        engine = CheckEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
+
+        req = CheckRequest.from_strings("document:doc", "viewer", "service:bot")
+
+        assert engine.check(req, context=_context(repo)).allowed is False
+
     def test_computed_userset_union(self) -> None:
         registry = SchemaRegistry()
         ns = NamespaceDef(

@@ -28,6 +28,16 @@ class TestPermissionDef:
             "description": "Editors may edit",
         }
 
+    def test_from_dict_roundtrip_with_description(self) -> None:
+        data = {
+            "type": "permission",
+            "name": "can_edit",
+            "rewrite": {"type": "computed_userset", "relation": "editor"},
+            "description": "Editors may edit",
+        }
+
+        assert PermissionDef.from_dict(data).to_dict() == data
+
     def test_nested_rewrite_serialization(self) -> None:
         rewrite = UnionRule(
             children=(ComputedUsersetRule("owner"), ComputedUsersetRule("editor"))

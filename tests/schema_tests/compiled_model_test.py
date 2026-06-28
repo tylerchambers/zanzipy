@@ -1,6 +1,6 @@
 import pytest
 
-from zanzipy.schema.compiled import CompiledAuthorizationModel
+from zanzipy.schema.compiled import CompiledAuthorizationModel, CompiledSubjectReference
 from zanzipy.schema.namespace import NamespaceDef
 from zanzipy.schema.permissions import PermissionDef
 from zanzipy.schema.registry import SchemaRegistry
@@ -89,6 +89,7 @@ class TestCompiledAuthorizationModel:
         rewrite = model.resolve("document", "viewer")
 
         assert isinstance(rewrite, DirectRule)
+        assert model.namespaces == ("document", "folder", "group", "project", "team")
 
     def test_relation_with_explicit_rewrite_does_not_compile_to_direct_rule(
         self,
@@ -224,3 +225,77 @@ class TestCompiledAuthorizationModel:
                 resource_type="document",
                 tuple_relation="missing",
             )
+
+    def test_compiled_subject_reference_allows_direct_userset_and_wildcard(
+        self,
+    ) -> None:
+        direct = CompiledSubjectReference(namespace="user")
+        userset = CompiledSubjectReference(namespace="group", relation="member")
+        wildcard = CompiledSubjectReference(namespace="user", wildcard=True)
+
+        assert direct.allows(namespace="user", entity_id="alice", relation=None) is True
+        assert direct.allows(namespace="user", entity_id="*", relation=None) is False
+        assert (
+            direct.allows(namespace="group", entity_id="alice", relation=None) is False
+        )
+        assert (
+            userset.allows(
+                namespace="group",
+                entity_id="eng",
+                relation="member",
+            )
+            is True
+        )
+        assert (
+            userset.allows(
+                namespace="group",
+                entity_id="eng",
+                relation="admin",
+            )
+            is False
+        )
+        assert wildcard.allows(namespace="user", entity_id="*", relation=None) is True
+        assert (
+            wildcard.allows(
+                namespace="user",
+                entity_id="alice",
+                relation=None,
+            )
+            is False
+        )
+
+    def test_allows_tuple_to_userset_subject_rejects_wildcard_and_subject_set(
+        self,
+    ) -> None:
+        model = CompiledAuthorizationModel.from_schema(_registry())
+
+        assert (
+            model.allows_tuple_to_userset_subject(
+                resource_type="document",
+                tuple_relation="parent",
+                subject_type="folder",
+                subject_id="docs",
+                subject_relation=None,
+            )
+            is True
+        )
+        assert (
+            model.allows_tuple_to_userset_subject(
+                resource_type="document",
+                tuple_relation="parent",
+                subject_type="folder",
+                subject_id="*",
+                subject_relation=None,
+            )
+            is False
+        )
+        assert (
+            model.allows_tuple_to_userset_subject(
+                resource_type="document",
+                tuple_relation="parent",
+                subject_type="folder",
+                subject_id="docs",
+                subject_relation="viewer",
+            )
+            is False
+        )

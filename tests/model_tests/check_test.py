@@ -56,6 +56,21 @@ class TestCheckRequest:
                 subject_str="group:eng#member",
             )
 
+    def test_to_dict_and_from_dict_roundtrip(self) -> None:
+        data = {
+            "object_type": "document",
+            "object_id": "readme",
+            "relation": "owner",
+            "subject_type": "user",
+            "subject_id": "alice",
+        }
+
+        request = CheckRequest.from_dict(data)
+
+        assert request.to_dict() == data
+        assert request.object == "document:readme"
+        assert request.subject == "user:alice"
+
     def test_to_filter_matches_fields(self) -> None:
         req = CheckRequest.from_strings(
             object_str="document:readme",

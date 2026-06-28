@@ -233,3 +233,17 @@ class TestSQLiteRelationRepository:
         write = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
         assert write.revision == Revision(1)
         assert repo.get(t, context=_read_context(write.revision)) == t
+
+    def test_info_reports_backend_columns_and_tenant_heads(self) -> None:
+        repo = SQLiteRelationRepository()
+        tuple_ = RelationTuple.from_string("document:doc1#viewer@user:alice")
+
+        repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+        repo.write(WriteContext(OTHER_TENANT), (TupleMutation.touch(tuple_),))
+        repo.write(WriteContext(OTHER_TENANT), (TupleMutation.delete(tuple_),))
+
+        info = repo.info()
+
+        assert info["backend"] == "sqlite"
+        assert info["head_revisions"] == {"default": 1, "other": 2}
+        assert "tuple_key" in info["columns"]

@@ -305,3 +305,19 @@ class TestSQLAlchemyRelationRepository:
             )
             == "INTEGER"
         )
+
+    def test_info_reports_backend_tables_columns_and_tenant_heads(self) -> None:
+        repo = _repo()
+        tuple_ = RelationTuple.from_string("document:doc1#viewer@user:alice")
+
+        repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+        repo.write(WriteContext(OTHER_TENANT), (TupleMutation.touch(tuple_),))
+        repo.write(WriteContext(OTHER_TENANT), (TupleMutation.delete(tuple_),))
+
+        info = repo.info()
+
+        assert info["backend"] == "sqlalchemy"
+        assert info["table"] == "relation_tuples"
+        assert info["revisions_table"] == "revisions"
+        assert info["head_revisions"] == {"default": 1, "other": 2}
+        assert "tuple_key" in info["columns"]
