@@ -1,40 +1,20 @@
 """
-Document Drive (enterprise document sharing example)
-===========================================================
+Document Drive: plain Python authorization with Zanzibar primitives
+===================================================================
 
-This example demonstrates a simple, realistic authorization model using
-Zanzibar concepts, implemented with the zanzipy client:
+Read this one first. It keeps the application tiny and uses the in-memory
+repository so the authorization model is visible:
 
-- Namespaces: user, group, folder, document
-- Relations: owner, editor, viewer (direct assignments)
-- Permissions: can_view/can_edit derived via rewrite rules
-- Tuple-to-userset: documents include the folder.viewer subjects via parent->viewer
+- users join groups;
+- folders are shared with users or group member sets;
+- documents inherit folder viewers through ``parent->viewer``;
+- explicit bans win over inherited access;
+- reverse lookup answers "which documents can Bob view?" without your app
+  scanning every document.
 
-Highlights of the model
------------------------
-1) Direct relations (stored tuples) represent explicit assignments you write:
-   - "folder:proj#owner@user:alice"
-   - "folder:proj#viewer@group:eng#member"
-   - "group:eng#member@user:bob"
-
-2) Permissions are computed from relations using rewrite rules:
-   - folder.can_view = owner + editor + viewer
-   - folder.can_edit = owner + editor
-   - document.can_view = owner + editor + viewer + parent->viewer
-     (include subjects on the containing folder's viewer relation)
-   - document.can_edit = owner + editor
-
-3) Subject sets and expansion: assigning a subject like "group:eng#member" to
-   a relation (e.g., folder.viewer) expands to all principals who are members
-   of that group; reverse lookup walks those edges from subject to resource.
-
-4) Tuple-to-Userset: documents include subjects from their folder's viewer
-   relation. We model that by giving each document a direct relation "parent"
-   that points to a folder. The permission expression then follows parent to
-   evaluate the folder "viewer" relation.
-
-This mirrors a common docs-and-folders sharing mental model while showing the
-core Zanzibar primitives.
+The point is not the document-drive domain. The point is the shape: product
+permissions are relationship facts plus a small schema that explains how those
+facts compose.
 
 Run:
     uv run python examples/document_drive.py
@@ -230,10 +210,11 @@ registry.register_many((user_ns, group_ns, folder_ns, document_ns))
 
 # === Client =================================================================
 
+# In-memory storage keeps the example zero-dependency. The client API is the
+# same when you swap in SQLAlchemy-backed storage later.
 client = ZanzibarClient(
     schema=registry,
     relations_repository=InMemoryRelationRepository(),
-    # optional; shows repository-based resolve path
     enable_debug=False,
 )
 
@@ -255,12 +236,6 @@ def create_folder(folder_id: str, owner: str) -> None:
     """Create a folder and set its owner (user or group)."""
 
     client.write(f"folder:{folder_id}", "owner", owner)
-
-
-def share_folder_viewer_with_user(folder_id: str, user_id: str) -> None:
-    """Grant a user viewer rights directly on a folder."""
-
-    client.write(f"folder:{folder_id}", "viewer", f"user:{user_id}")
 
 
 def share_folder_viewer_with_group(folder_id: str, group_id: str) -> None:
@@ -289,12 +264,14 @@ def share_document_editor_with_user(doc_id: str, user_id: str) -> None:
     client.write(f"document:{doc_id}", "editor", f"user:{user_id}")
 
 
+def ban_document_viewer(doc_id: str, user_id: str) -> None:
+    """Deny a user even when another path would otherwise allow viewing."""
+
+    client.write(f"document:{doc_id}", "banned", f"user:{user_id}")
+
+
 def can_view_folder(folder_id: str, user_id: str) -> bool:
     return client.check(f"folder:{folder_id}", "can_view", f"user:{user_id}")
-
-
-def can_edit_folder(folder_id: str, user_id: str) -> bool:
-    return client.check(f"folder:{folder_id}", "can_edit", f"user:{user_id}")
 
 
 def can_view_doc(doc_id: str, user_id: str) -> bool:
@@ -346,10 +323,15 @@ print("Document created:")
 print("- document:spec owner -> user:alice")
 print("- document:spec parent -> folder:proj (enables doc view via folder.viewer)\n")
 
-# Grant Dora edit rights to the document directly (but not to the folder)
+# Grant Dora edit rights directly, then ban Charlie on this document.
+# Charlie is still in group:eng, so the later False result proves that
+# exclusions beat inherited group access.
 share_document_editor_with_user("spec", "dora")
+ban_document_viewer("spec", "charlie")
 
-print("Sharing: granted editor on document:spec to user:dora\n")
+print("Sharing:")
+print("- granted editor on document:spec to user:dora")
+print("- banned user:charlie on document:spec despite group inheritance\n")
 
 # Checks: who can view/edit?
 print("=== Checks (why they pass/fail) ===")
@@ -364,7 +346,7 @@ print(
     f"- Bob (via folder viewer inheritance) can view doc: {can_view_doc('spec', 'bob')}"
 )
 print(
-    "- Charlie (via folder viewer inheritance) can view doc: "
+    "- Charlie (eng member, but explicitly banned) can view doc: "
     f"{can_view_doc('spec', 'charlie')}"
 )
 print(f"- Dora (editor) can view doc: {can_view_doc('spec', 'dora')}")
@@ -391,7 +373,8 @@ print(
 print(
     "- Documents include their folder's viewer subjects (parent->viewer) but "
     "not editing; this demonstrates tuple-to-userset and a deliberate "
-    "non-inheritance choice."
+    "non-inheritance choice. Explicit document bans subtract from the final "
+    "viewer set."
 )
 
 # === Expansion (who can X?) ==================================================

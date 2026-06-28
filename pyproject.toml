@@ -1,7 +1,7 @@
 [project]
 name = "zanzipy"
 version = "0.4.0"
-description = "Building blocks for zanzibar style ReBAC"
+description = "Embedded Zanzibar-style ReBAC for Python applications"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = []
