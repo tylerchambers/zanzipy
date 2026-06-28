@@ -90,6 +90,32 @@ class TestCompiledAuthorizationModel:
 
         assert isinstance(rewrite, DirectRule)
 
+    def test_relation_with_explicit_rewrite_does_not_compile_to_direct_rule(
+        self,
+    ) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects("viewer", (_user_ref(),)),
+                    RelationDef.with_subjects(
+                        "delegated_viewer",
+                        (_user_ref(),),
+                        rewrite=ComputedUsersetRule("viewer"),
+                    ),
+                ),
+            )
+        )
+
+        rewrite = CompiledAuthorizationModel.from_schema(registry).resolve(
+            "document",
+            "delegated_viewer",
+        )
+
+        assert isinstance(rewrite, ComputedUsersetRule)
+        assert rewrite.relation == "viewer"
+
     def test_permission_resolves_to_typed_current_rewrite(self) -> None:
         model = CompiledAuthorizationModel.from_schema(_registry())
 

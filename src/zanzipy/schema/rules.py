@@ -89,8 +89,12 @@ class RewriteRule(ABC):
         """Deserialize a rewrite rule from its canonical dictionary form.
 
         Raises:
+            TypeError: If ``data`` is not a rewrite rule dictionary.
             ValueError: If the ``type`` field is not a known rewrite rule type.
         """
+        if not isinstance(data, dict):
+            raise TypeError("RewriteRule data must be a dictionary")
+
         raw_type = data.get("type")
         try:
             rule_type = RewriteRuleType(raw_type)
