@@ -3,7 +3,10 @@
 from collections.abc import Iterable, Iterator  # noqa: TC003
 
 from zanzipy.models import RelationTuple, TupleFilter  # noqa: TC001
-from zanzipy.storage.repos.abstract.relations import RelationRepository
+from zanzipy.storage.repos.abstract.relations import (
+    RelationRepository,
+    RelationWriteValidationMixin,
+)
 from zanzipy.storage.revision import (
     ReadContext,
     RelationshipChange,
@@ -17,7 +20,7 @@ from zanzipy.storage.revision import (
 )
 
 
-class InMemoryRelationRepository(RelationRepository):
+class InMemoryRelationRepository(RelationWriteValidationMixin, RelationRepository):
     """In-memory ``RelationRepository`` with exact tenant revision snapshots.
 
     The repository preserves insertion order for deterministic reads, stores a
@@ -41,6 +44,7 @@ class InMemoryRelationRepository(RelationRepository):
         Raises:
             ValueError: If a mutation contains an unknown operation.
         """
+        mutations = self._validated_mutation_batch(mutations)
         tenant_key = str(context.tenant)
         self._ensure_tenant(tenant_key)
         staged = dict(self._tuples[tenant_key])
