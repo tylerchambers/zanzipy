@@ -1,3 +1,7 @@
+# 🚨🚨 DO NOT USE IN PRODUCTION 🚨🚨
+
+**zanzipy is experimental. Do not use it to make production authorization decisions.**
+
 # zanzipy
 
 **Embedded Zanzibar-style authorization for Python applications.**
