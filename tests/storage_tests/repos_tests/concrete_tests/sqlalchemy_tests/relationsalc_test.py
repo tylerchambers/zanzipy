@@ -1,8 +1,13 @@
+from typing import TYPE_CHECKING, cast
+
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, create_mock_engine
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateIndex
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Engine
 
 from zanzipy.models import RelationTuple, TupleFilter
 from zanzipy.storage.repos.concrete.sqlalchemy import SQLAlchemyRelationRepository
@@ -241,6 +246,35 @@ class TestSQLAlchemyRelationRepository:
 
         candidate = _postgresql_index_sql(repo, "idx_rt_object_type_relation")
         assert "(tenant_id, object_ns, relation, object_id)" in candidate
+
+    @pytest.mark.parametrize(
+        ("url", "dialect_name"),
+        [("mysql://", "mysql"), ("mariadb://", "mariadb")],
+    )
+    def test_create_schema_rejects_dialects_without_partial_indexes(
+        self,
+        url: str,
+        dialect_name: str,
+    ) -> None:
+        emitted: list[object] = []
+        engine = create_mock_engine(
+            url,
+            lambda sql, *_args, **_kwargs: emitted.append(sql),
+        )
+        repo = SQLAlchemyRelationRepository(
+            lambda: pytest.fail("unexpected session use")
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                rf"unsupported SQLAlchemy dialect {dialect_name!r}.*"
+                "SQLite and PostgreSQL"
+            ),
+        ):
+            repo.create_schema(cast("Engine", engine))
+
+        assert emitted == []
 
     def test_revision_columns_use_bigint_for_postgresql(self) -> None:
         repo = _repo()
