@@ -1,9 +1,16 @@
 """
-Document Drive (SQLAlchemy + Mixins)
-----------------------------------
+Document Drive: SQLAlchemy plus authorization mixins
+---------------------------------------------------
 
-Same scenario as `document_drive_sqlalchemy_and_dsl.py`, but domain objects use
-zanzipy authorization mixins and a context-injected engine.
+This version keeps authorization verbs on your domain objects. Instead of
+hand-formatting tuple strings everywhere, resources expose ``grant``/``check``
+and subjects expose ``get_accessible`` through zanzipy mixins.
+
+What to notice:
+- ``Team`` is both a group resource and a ``group#member`` subject set;
+- ``folder.grant(eng, "viewer")`` shares with the whole team;
+- ``document.grant(folder, "parent")`` enables folder viewer inheritance;
+- ``document.grant(charlie, "banned")`` proves explicit deny overrides access.
 
 Requires SQLAlchemy outside a checkout:
     pip install "zanzipy[sqlalchemy]"
@@ -129,7 +136,7 @@ folder_ns = (
         ExclusionRule(
             base=UnionRule(
                 children=(
-                    z := ComputedUsersetRule("owner"),
+                    ComputedUsersetRule("owner"),
                     ComputedUsersetRule("editor"),
                     ComputedUsersetRule("viewer"),
                     TupleToUsersetRule(
@@ -206,7 +213,8 @@ client = ZanzibarClient(
 configure_authorization(ZanzibarEngine(client))
 
 
-"""Simple, explicit setup without re-querying or helper shims."""
+# Keep the setup explicit: domain objects are normal Python/SQLAlchemy objects,
+# and only authorization facts are written through the mixin methods below.
 
 # === Seed domain and tuples ===================================================
 
@@ -238,16 +246,19 @@ with SessionLocal() as db:
     )
     db.commit()
 
-    # Mirror membership to authorization tuples while instances are attached
+    # Keep the domain join for product features, then mirror membership into
+    # zanzipy tuples so authorization can follow group#member subject sets.
     eng.add_member(bob)
     eng.add_member(charlie)
 
-# Share folder/document
+# Share folder/document relationships through domain-friendly verbs. These
+# calls write the same relation tuples as the lower-level client examples.
 folder.grant(alice, "owner")
 folder.grant(eng, "viewer")
 document.grant(alice, "owner")
 document.grant(folder, "parent")
 document.grant(dora, "editor")
+document.grant(charlie, "banned")
 
 
 # === Demo checks and expansion ===============================================
@@ -262,14 +273,18 @@ print(f"- Eve: {folder.check(eve, 'can_view')}")
 print("Document viewing:")
 print(f"- Alice: {document.check(alice, 'can_view')}")
 print(f"- Bob: {document.check(bob, 'can_view')}")
-print(f"- Charlie: {document.check(charlie, 'can_view')}")
+print(
+    "- Charlie (eng member, but document-banned): "
+    f"{document.check(charlie, 'can_view')}"
+)
 print(f"- Dora: {document.check(dora, 'can_view')}")
 print(f"- Eve: {document.check(eve, 'can_view')}")
 
-# Demonstrate cache behavior with subject-bucket reverse lookup.
-_ = document.check(bob, "can_view")  # warm object buckets
-_ = document.check(bob, "can_view")  # object-cache hit
-_ = document.who_can("can_view")  # object-cache hit
-bob_docs = bob.get_accessible("document", "can_view")  # warm subject buckets
-bob_docs = bob.get_accessible("document", "can_view")  # subject-cache hits
+# Warm both cache paths. Object reads serve check/expand; subject buckets serve
+# reverse lookup through get_accessible.
+_ = document.check(bob, "can_view")
+_ = document.check(bob, "can_view")
+_ = document.who_can("can_view")
+bob_docs = bob.get_accessible("document", "can_view")
+bob_docs = bob.get_accessible("document", "can_view")
 print(f"Documents Bob can view via lookup: {[str(obj) for obj in bob_docs]}")

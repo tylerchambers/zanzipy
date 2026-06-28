@@ -1,11 +1,16 @@
 """
-Document Drive (SQLAlchemy edition)
----------------------------------
+Document Drive: SQLAlchemy-backed authorization storage
+------------------------------------------------------
 
-Same scenario as `document_drive.py`, but using SQLAlchemy-backed repositories and
-proper domain models with stable IDs (UUIDs). This demonstrates how to wire
-zanzipy into an app that already uses SQLAlchemy for persistence, while using
-the same SQLAlchemy engine for the authorization storage tables.
+This version keeps the same permission model as ``document_drive.py`` and moves
+relation tuples into SQLAlchemy-managed tables. The app still owns its normal
+domain tables; zanzipy stores only authorization facts such as
+``document:spec#parent@folder:proj``.
+
+Use this when your service already has SQLAlchemy infrastructure and you want
+durable, tenant-scoped authorization storage without changing the client API.
+This file uses explicit schema objects for full control; most app code can use
+the shorter DSL shown in ``document_drive_sqlalchemy_and_dsl.py``.
 
 Requires SQLAlchemy outside a checkout:
     pip install "zanzipy[sqlalchemy]"
@@ -58,7 +63,7 @@ class Team(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
 
 
-# Association table: team membership
+# Business data: team membership lives in the app database first.
 team_members = Table(
     "team_members",
     Base.metadata,
@@ -216,17 +221,15 @@ registry.register_many((user_ns, group_ns, folder_ns, document_ns))
 engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
-# Create domain tables
+# Domain and authorization tables can live beside each other. zanzipy stores
+# relation tuples separately from business tables so checks stay auditable.
 Base.metadata.create_all(bind=engine)
 
-# Create authorization tables
 rel_repo = SQLAlchemyRelationRepository(SessionLocal)
-# Create the authorization schema through the repository's public API.
 rel_repo.create_schema(engine)
 
-
-# Optional: enable an in-memory LRU cache for hot relation tuple reads.
-# This wraps the relations repository under the hood and is fully optional.
+# Optional hot-path cache. Cache entries are tenant/revision-aware, so writes
+# move future reads to new keys instead of mutating old snapshots.
 tuple_cache = LruTupleCache(max_entries=10_000, ttl_seconds=30)
 
 client = ZanzibarClient(
@@ -269,8 +272,8 @@ with Session(engine) as db:
     )
     db.commit()
 
-    # Mirror the domain membership into zanzipy tuples via subject-set
-    # group namespace uses 'group', but our table is named teams
+    # Mirror business membership into authorization tuples. zanzipy does not
+    # inspect ORM joins; explicit tuples keep authorization auditable.
     client.write(f"group:{eng.id}", "member", f"user:{bob.id}")
     client.write(f"group:{eng.id}", "member", f"user:{charlie.id}")
 
@@ -278,10 +281,12 @@ with Session(engine) as db:
     client.write("folder:proj", "owner", f"user:{alice.id}")
     client.write("folder:proj", "viewer", f"group:{eng.id}#member")
 
-    # Create document under folder and share editor with Dora
+    # Create a document under the folder, grant Dora edit rights, and ban
+    # Charlie to show that exclusions beat inherited group access.
     client.write("document:spec", "owner", f"user:{alice.id}")
     client.write("document:spec", "parent", "folder:proj")
     client.write("document:spec", "editor", f"user:{dora.id}")
+    client.write("document:spec", "banned", f"user:{charlie.id}")
 
 
 # === Demo checks and expansion ===============================================
@@ -304,7 +309,10 @@ with Session(engine) as db:
     us = {u.name: u for u in db.query(User).all()}
     print(f"- Alice: {chk('document:spec', 'can_view', us['Alice'])}")
     print(f"- Bob: {chk('document:spec', 'can_view', us['Bob'])}")
-    print(f"- Charlie: {chk('document:spec', 'can_view', us['Charlie'])}")
+    print(
+        "- Charlie (eng member, but document-banned): "
+        f"{chk('document:spec', 'can_view', us['Charlie'])}"
+    )
     print(f"- Dora: {chk('document:spec', 'can_view', us['Dora'])}")
     print(f"- Eve: {chk('document:spec', 'can_view', us['Eve'])}")
 

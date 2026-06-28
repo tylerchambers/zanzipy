@@ -1,12 +1,16 @@
 """
-Document Drive (Flask + SQLAlchemy + Mixins)
------------------------------------------
+Document Drive: Flask app factory with SQLAlchemy storage
+--------------------------------------------------------
 
-This example mirrors document_drive_sqlalchemy_and_mixins.py but demonstrates the
-Flask integration and request-scoped engine binding. It uses:
- - SQLAlchemy for domain persistence (users, teams)
- - zanzipy mixins for domain-friendly authorization helpers
- - the Flask extension to initialize a ZanzibarClient and bind the engine
+Configure zanzipy once, then use ``current_zanzibar`` inside request handlers.
+The app keeps normal domain tables in SQLAlchemy and stores authorization facts
+in zanzipy's SQLAlchemy relation tables.
+
+What to notice:
+- the Flask extension builds a request-scoped ``ZanzibarEngine``;
+- route handlers can call ``current_zanzibar.check`` directly;
+- the lookup route exposes ``list_objects`` over HTTP;
+- the seeded data includes an explicit document ban to show deny overrides.
 
 Requires Flask and SQLAlchemy outside a checkout:
     pip install "zanzipy[flask,sqlalchemy]"
@@ -14,11 +18,10 @@ Requires Flask and SQLAlchemy outside a checkout:
 Run:
     uv run python examples/document_drive_flask_sqlalchemy.py
 
-Then visit:
-    http://127.0.0.1:5000/folder/<folder_id>/can_view/<user_id>
-    http://127.0.0.1:5000/document/<doc_id>/can_view/<user_id>
-    http://127.0.0.1:5000/team/<team_id>/has_member/<user_id>
-    http://127.0.0.1:5000/user/<user_id>/documents/can_view
+The script prints copy/paste environment variables. Useful routes:
+    curl -s http://127.0.0.1:5000/folder/$FOLDER_ID/can_view/$BOB_ID
+    curl -s http://127.0.0.1:5000/document/$DOCUMENT_ID/can_view/$CHARLIE_ID
+    curl -s http://127.0.0.1:5000/user/$BOB_ID/documents/can_view
 """
 
 from dataclasses import dataclass, field
@@ -184,8 +187,8 @@ registry = (
 def create_app() -> Flask:
     app = Flask(__name__)
 
-    # In-memory SQLite DB for demo
-    # Use a single shared in-memory SQLite connection across sessions
+    # Demo-only: StaticPool keeps one in-memory SQLite database alive across
+    # sessions. Use your normal SQLAlchemy engine in a real Flask app.
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         future=True,
@@ -201,15 +204,14 @@ def create_app() -> Flask:
     rel_repo = SQLAlchemyRelationRepository(SessionLocal)
     rel_repo.create_schema(engine)
 
-    # Configure Zanzibar extension
+    # Configure Zanzibar extension. These config values are factories on
+    # purpose: production apps can build app-aware repositories and caches.
     zanzibar = Zanzibar()
 
-    # Provide schema via module-like object with attribute `registry`
+    # A SimpleNamespace stands in for a schema module with a `registry` export.
     schema_module = types.SimpleNamespace(registry=registry)
     app.config["ZANZIBAR_SCHEMA"] = schema_module
-    # Provide repo as a factory (here we reuse the prepared instance)
     app.config["ZANZIBAR_RELATIONS_REPO"] = lambda: rel_repo
-    # Optional: in-process cache for hot reads
     app.config["ZANZIBAR_TUPLE_CACHE"] = lambda _app: LruTupleCache(
         max_entries=10_000, ttl_seconds=30
     )
@@ -219,7 +221,8 @@ def create_app() -> Flask:
     # Seed domain and tuples
     app.config["DEMO_IDS"] = seed_data(SessionLocal)
 
-    # Routes using proxy and/or mixins
+    # Routes use the request-scoped proxy, so handlers do not need to carry the
+    # client or engine through every function signature.
     @app.get("/folder/<folder_id>/can_view/<user_id>")
     def folder_can_view(folder_id: str, user_id: str):  # type: ignore[override]
         allowed = current_zanzibar.check(
@@ -244,7 +247,7 @@ def create_app() -> Flask:
 
     @app.get("/user/<user_id>/documents/can_view")
     def user_documents_can_view(user_id: str):  # type: ignore[override]
-        # Exercise reverse subject-bucket LookupResources.
+        # Reverse lookup answers "which documents can this user view?"
         client = current_zanzibar.client
         if client is None:
             raise RuntimeError("Zanzibar client not configured")
@@ -260,7 +263,7 @@ def seed_data(SessionLocal) -> dict[str, str]:
     folder = Folder(name="Project")
     document = Document(title="Spec")
 
-    # Persist users/teams and membership, then mirror to auth tuples via mixins
+    # Persist domain data, then mirror only authorization facts into zanzipy.
     with SessionLocal() as db:
         alice = User(name="Alice")
         bob = User(name="Bob")
@@ -272,16 +275,15 @@ def seed_data(SessionLocal) -> dict[str, str]:
         db.add_all([alice, bob, charlie, dora, eve, eng])
         db.commit()
 
-        # Create group membership via authorization tuples (no domain join table)
         eng.add_member(bob)
         eng.add_member(charlie)
 
-        # Share folder/document
         folder.grant(alice, "owner")
         folder.grant(eng, "viewer")
         document.grant(alice, "owner")
         document.grant(folder, "parent")
         document.grant(dora, "editor")
+        document.grant(charlie, "banned")
 
         demo_ids = {
             "folder": folder.id,
@@ -308,13 +310,13 @@ def seed_data(SessionLocal) -> dict[str, str]:
         print(f"export ENG_TEAM_ID='{demo_ids['eng_team']}'")
         print("-" * 80)
         print()
-        # Then to test, you can run curl commands like:
-        # curl -s http://127.0.0.1:5000/folder/$FOLDER_ID/can_view/$ALICE_ID
+        # Expected checks:
+        # - Bob can view via group:eng#member.
+        # - Charlie is also in Engineering, but document:banned makes this False.
+        # - Eve has no tuple path, so she stays denied.
         # curl -s http://127.0.0.1:5000/folder/$FOLDER_ID/can_view/$BOB_ID
-        # curl -s http://127.0.0.1:5000/document/$DOCUMENT_ID/can_view/$ALICE_ID
-        # curl -s http://127.0.0.1:5000/document/$DOCUMENT_ID/can_view/$BOB_ID
-        # curl -s http://127.0.0.1:5000/team/$ENG_TEAM_ID/has_member/$ALICE_ID
-        # curl -s http://127.0.0.1:5000/team/$ENG_TEAM_ID/has_member/$BOB_ID
+        # curl -s http://127.0.0.1:5000/document/$DOCUMENT_ID/can_view/$CHARLIE_ID
+        # curl -s http://127.0.0.1:5000/document/$DOCUMENT_ID/can_view/$EVE_ID
         # curl -s http://127.0.0.1:5000/user/$BOB_ID/documents/can_view
 
         return demo_ids
