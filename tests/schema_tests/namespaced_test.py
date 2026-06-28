@@ -58,6 +58,27 @@ class TestNamespaceDef:
         with pytest.raises(IdentifierValidationError):
             NamespaceDef.from_dict(data)
 
+    def test_from_dict_rejects_falsy_invalid_relation_rewrite(self) -> None:
+        data = {
+            "name": "document",
+            "description": None,
+            "relations": {
+                "viewer": {
+                    "type": "relation",
+                    "name": "viewer",
+                    "allowed_subjects": [
+                        {"namespace": "user", "relation": None, "wildcard": False}
+                    ],
+                    "rewrite": {},
+                    "description": None,
+                }
+            },
+            "permissions": {},
+        }
+
+        with pytest.raises(ValueError, match="Unknown RewriteRule type"):
+            NamespaceDef.from_dict(data)
+
     def test_full_roundtrip(self) -> None:
         subjects_user = (SubjectReference(namespace=NamespaceId("user")),)
         subjects_group_member = (

@@ -44,6 +44,21 @@ class TestRelationDef:
         rel = RelationDef.from_dict(data)
         assert rel.to_dict() == data
 
+    @pytest.mark.parametrize("rewrite", [({},), ([],), (False,), ("",)])
+    def test_from_dict_rejects_falsy_invalid_rewrite(self, rewrite: Any) -> None:
+        data = {
+            "type": "relation",
+            "name": "viewer",
+            "allowed_subjects": [
+                {"namespace": "user", "relation": None, "wildcard": False}
+            ],
+            "rewrite": rewrite,
+            "description": None,
+        }
+
+        with pytest.raises((TypeError, ValueError), match="RewriteRule"):
+            RelationDef.from_dict(data)
+
     def test_to_dict_with_rewrite_and_description(self) -> None:
         subjects = (
             SubjectReference(namespace=NamespaceId("user")),

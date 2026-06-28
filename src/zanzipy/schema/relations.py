@@ -106,11 +106,13 @@ class RelationDef:
     @classmethod
     def from_dict(cls, data: dict) -> Self:
         """Deserialize a relation definition from its schema dictionary."""
+        raw_rewrite = data["rewrite"]
+        rewrite = None if raw_rewrite is None else RewriteRule.from_dict(raw_rewrite)
         return cls(
             name=data["name"],
             allowed_subjects=[
                 SubjectReference.from_dict(s) for s in data["allowed_subjects"]
             ],
-            rewrite=RewriteRule.from_dict(data["rewrite"]) if data["rewrite"] else None,
+            rewrite=rewrite,
             description=data.get("description"),
         )
