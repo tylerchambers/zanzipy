@@ -122,6 +122,19 @@ def test_schema_invalid_wildcard_tuple_is_ignored_by_read_apis() -> None:
     _assert_no_viewer_grant(client)
 
 
+def test_schema_unknown_reverse_bucket_tuples_are_ignored_by_read_apis() -> None:
+    repo = InMemoryRelationRepository()
+    _write_raw(
+        repo,
+        "legacy:doc#viewer@user:alice",
+        "document:doc#legacy_viewer@user:alice",
+    )
+
+    client = _client(repo, _schema(_user_ref()))
+
+    _assert_no_viewer_grant(client)
+
+
 @pytest.mark.parametrize(
     ("schema_v1_subjects", "schema_v2_subjects", "tuples"),
     [

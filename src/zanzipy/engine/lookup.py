@@ -608,27 +608,31 @@ class LookupEngine(RewriteRuleDispatcher):
                     continue
 
                 target_relation = str(relation_tuple.relation)
+                target_resource_type = str(relation_tuple.object.namespace)
+                target_is_requested_relation = (
+                    target_resource_type == resource_type
+                    and target_relation == relation
+                )
+                userset_ref = (target_resource_type, target_relation)
+                if (
+                    not target_is_requested_relation
+                    and userset_ref not in reachable_usersets
+                ):
+                    continue
                 if not self._model.allows_stored_subject(
-                    resource_type=str(relation_tuple.object.namespace),
+                    resource_type=target_resource_type,
                     relation=target_relation,
                     subject=relation_tuple.subject,
                 ):
                     continue
-                if (
-                    str(relation_tuple.object.namespace) == resource_type
-                    and target_relation == relation
-                ):
+                if target_is_requested_relation:
                     resources.add(relation_tuple.object)
 
-                userset_ref = (
-                    str(relation_tuple.object.namespace),
-                    target_relation,
-                )
                 if userset_ref not in reachable_usersets:
                     continue
 
                 userset_subject = Subject.from_parts(
-                    str(relation_tuple.object.namespace),
+                    target_resource_type,
                     str(relation_tuple.object.id),
                     target_relation,
                 )
