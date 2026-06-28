@@ -695,7 +695,7 @@ def test_lookup_cycle_matches_check_for_path_local_exclusion_rewrite() -> None:
     assert client.list_objects("document", "viewer", "user:alice") == checked
 
 
-def test_lookup_filters_complex_userset_candidates_with_check_depth() -> None:
+def test_lookup_filters_complex_userset_candidates_with_traversal_depth() -> None:
     registry = SchemaRegistry()
     registry.register_many(
         [
