@@ -106,6 +106,6 @@ class SubjectReference:
         relation = data.get("relation")
         return cls(
             namespace=NamespaceId(data["namespace"]),
-            relation=Rel(relation) if relation else None,
+            relation=None if relation is None else Rel(relation),
             wildcard=data.get("wildcard", False),
         )

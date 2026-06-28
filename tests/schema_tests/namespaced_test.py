@@ -37,6 +37,27 @@ class TestNamespaceDef:
         ns = NamespaceDef.from_dict(data)
         assert ns.to_dict() == data
 
+    def test_from_dict_rejects_empty_allowed_subject_relation(self) -> None:
+        data = {
+            "name": "document",
+            "description": None,
+            "relations": {
+                "viewer": {
+                    "type": "relation",
+                    "name": "viewer",
+                    "allowed_subjects": [
+                        {"namespace": "group", "relation": "", "wildcard": False}
+                    ],
+                    "rewrite": None,
+                    "description": None,
+                }
+            },
+            "permissions": {},
+        }
+
+        with pytest.raises(IdentifierValidationError):
+            NamespaceDef.from_dict(data)
+
     def test_full_roundtrip(self) -> None:
         subjects_user = (SubjectReference(namespace=NamespaceId("user")),)
         subjects_group_member = (
