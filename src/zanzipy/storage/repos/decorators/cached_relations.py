@@ -134,11 +134,17 @@ class CachedRelationRepository(RelationRepository):
         *,
         context: ReadContext,
     ) -> list[RelationTuple]:
-        cached = self.cache.get_by_object(obj, context=context)
+        try:
+            cached = self.cache.get_by_object(obj, context=context)
+        except Exception:
+            cached = None
         if cached is not None:
             return list(cached)
         result = list(self.backend.by_object(obj, context=context))
-        self.cache.set_by_object(obj, context=context, tuples=result)
+        try:
+            self.cache.set_by_object(obj, context=context, tuples=result)
+        except Exception:
+            return result
         return result
 
     def _subject_bucket(
@@ -148,9 +154,15 @@ class CachedRelationRepository(RelationRepository):
         *,
         context: ReadContext,
     ) -> list[RelationTuple]:
-        cached = self.cache.get_by_subject(subject, context=context)
+        try:
+            cached = self.cache.get_by_subject(subject, context=context)
+        except Exception:
+            cached = None
         if cached is not None:
             return list(cached)
         result = list(self.backend.read_reverse(filter, context=context))
-        self.cache.set_by_subject(subject, context=context, tuples=result)
+        try:
+            self.cache.set_by_subject(subject, context=context, tuples=result)
+        except Exception:
+            return result
         return result
