@@ -107,6 +107,18 @@ class TestSubjectReference:
         assert s.relation is None
         assert bool(s.wildcard) is False
 
+    @pytest.mark.parametrize("relation", ["", False, 0])
+    def test_from_dict_rejects_present_invalid_relation(self, relation: object) -> None:
+        data = {"namespace": "group", "relation": relation, "wildcard": False}
+        with pytest.raises(IdentifierValidationError):
+            SubjectReference.from_dict(data)
+
+    @pytest.mark.parametrize("wildcard", ["", None, 0, 1])
+    def test_from_dict_rejects_non_bool_wildcard(self, wildcard: object) -> None:
+        data = {"namespace": "group", "relation": None, "wildcard": wildcard}
+        with pytest.raises(TypeError, match="wildcard must be bool"):
+            SubjectReference.from_dict(data)
+
     def test_from_dict_conflicting_relation_and_wildcard_raises(self) -> None:
         data = {"namespace": "group", "relation": "member", "wildcard": True}
         with pytest.raises(

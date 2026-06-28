@@ -74,6 +74,38 @@ class TestZanzibarClient:
         registry.register_many([ns, folder, group])
         return registry
 
+    @staticmethod
+    def _write_direct_subject_with_empty_loaded_subject_relation() -> None:
+        registry = SchemaRegistry()
+        namespace = NamespaceDef.from_dict(
+            {
+                "name": "document",
+                "description": None,
+                "relations": {
+                    "viewer": {
+                        "type": "relation",
+                        "name": "viewer",
+                        "allowed_subjects": [
+                            {
+                                "namespace": "group",
+                                "relation": "",
+                                "wildcard": False,
+                            }
+                        ],
+                        "rewrite": None,
+                        "description": None,
+                    }
+                },
+                "permissions": {},
+            }
+        )
+        registry.register(namespace)
+        client = ZanzibarClient(
+            relations_repository=InMemoryRelationRepository(),
+            schema=registry,
+        )
+        client.write("document:d1", "viewer", "group:eng")
+
     def test_tenant_string_is_normalized_and_invalid_types_rejected(self) -> None:
         repo = InMemoryRelationRepository()
         client = ZanzibarClient(
@@ -146,6 +178,13 @@ class TestZanzibarClient:
         # Bad tuple formatting via components (e.g., missing ':')
         with pytest.raises(InvalidTupleFormatError):
             client.write("document", "owner", "user:alice")
+
+    def test_loaded_empty_subject_relation_cannot_accept_direct_subject(self) -> None:
+        with pytest.raises(
+            (IdentifierValidationError, ValueError),
+            match=r"identifier cannot be empty|Subject not allowed by schema",
+        ):
+            self._write_direct_subject_with_empty_loaded_subject_relation()
 
     def test_write_wildcard_subjects_preserve_schema_semantics(self) -> None:
         registry = SchemaRegistry()
