@@ -11,6 +11,7 @@ from zanzipy.schema.rules import (
     ComputedUsersetRule,
     ExclusionRule,
     IntersectionRule,
+    ThisRule,
     TupleToUsersetRule,
     UnionRule,
 )
@@ -367,6 +368,97 @@ class TestExpansionEngine:
         )
         assert viewer_without_banned.users == {"user:bob"}
         assert viewer_without_banned.usersets == set()
+
+    def test_exclusion_subtract_depth_cutoff_fails_closed(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                        rewrite=ExclusionRule(
+                            ThisRule(),
+                            ComputedUsersetRule("blocked"),
+                        ),
+                    ),
+                    RelationDef.with_subjects(
+                        "blocked",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                    ),
+                ),
+            )
+        )
+
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#viewer@user:alice")
+                ),
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#blocked@user:alice")
+                ),
+            ),
+        )
+
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+            max_depth=1,
+        )
+        sset = engine.expand("document", "doc", "viewer", context=_context(repo))
+        assert sset.users == set()
+        assert sset.usersets == set()
+
+        complete_engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+            max_depth=25,
+        )
+        complete_sset = complete_engine.expand(
+            "document", "doc", "viewer", context=_context(repo)
+        )
+        assert complete_sset.users == set()
+        assert complete_sset.usersets == set()
+
+    def test_exclusion_subtract_cycle_fails_closed(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                        rewrite=ExclusionRule(
+                            ThisRule(),
+                            ComputedUsersetRule("viewer"),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#viewer@user:alice")
+                ),
+            ),
+        )
+
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
+        sset = engine.expand("document", "doc", "viewer", context=_context(repo))
+        assert sset.users == set()
+        assert sset.usersets == set()
 
     def test_tuple_to_userset_cross_namespace(self) -> None:
         registry = SchemaRegistry()
