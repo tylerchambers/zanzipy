@@ -442,6 +442,12 @@ class CheckEngine(RewriteRuleDispatcher):
                 continue
 
             counters.tuples_examined += 1
+            if not self._model.allows_stored_subject(
+                resource_type=object_type,
+                relation=effective_relation,
+                subject=t.subject,
+            ):
+                continue
 
             # Direct subject: exact match or namespace wildcard
             if t.subject.relation is None and str(t.subject.namespace) == subject_type:
@@ -506,6 +512,12 @@ class CheckEngine(RewriteRuleDispatcher):
 
             # Only consider tuples where the subject is an object reference
             if t.subject.relation is not None:
+                continue
+            if not self._model.allows_tuple_to_userset_stored_subject(
+                resource_type=object_type,
+                tuple_relation=tuple_relation,
+                subject=t.subject,
+            ):
                 continue
 
             result = self._check_recursive(

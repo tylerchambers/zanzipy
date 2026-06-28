@@ -577,6 +577,11 @@ class LookupEngine(RewriteRuleDispatcher):
                                 ),
                                 context=context,
                             )
+                            if self._model.allows_tuple_to_userset_stored_subject(
+                                resource_type=parent_ref[0],
+                                tuple_relation=tuple_relation,
+                                subject=relation_tuple.subject,
+                            )
                         )
 
                     for userset_subject in userset_subjects:
@@ -603,6 +608,12 @@ class LookupEngine(RewriteRuleDispatcher):
                     continue
 
                 target_relation = str(relation_tuple.relation)
+                if not self._model.allows_stored_subject(
+                    resource_type=str(relation_tuple.object.namespace),
+                    relation=target_relation,
+                    subject=relation_tuple.subject,
+                ):
+                    continue
                 if (
                     str(relation_tuple.object.namespace) == resource_type
                     and target_relation == relation
@@ -665,19 +676,23 @@ class LookupEngine(RewriteRuleDispatcher):
             )
             for parent in parent_resources:
                 parent_subject = Subject.from_object(parent)
-                resources.update(
-                    t.object
-                    for t in self._relations.read_reverse(
-                        TupleFilter(
-                            object_type=resource_type,
-                            relation=tuple_relation,
-                            subject_type=str(parent_subject.namespace),
-                            subject_id=str(parent_subject.id),
-                            subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
-                        ),
-                        context=context,
-                    )
-                )
+                for relation_tuple in self._relations.read_reverse(
+                    TupleFilter(
+                        object_type=resource_type,
+                        relation=tuple_relation,
+                        subject_type=str(parent_subject.namespace),
+                        subject_id=str(parent_subject.id),
+                        subject_relation=TupleFilter.DIRECT_SUBJECT_RELATION,
+                    ),
+                    context=context,
+                ):
+                    if not self._model.allows_tuple_to_userset_stored_subject(
+                        resource_type=resource_type,
+                        tuple_relation=tuple_relation,
+                        subject=relation_tuple.subject,
+                    ):
+                        continue
+                    resources.add(relation_tuple.object)
         return resources
 
     def _reachable_userset_refs(
