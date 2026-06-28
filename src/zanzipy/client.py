@@ -51,16 +51,20 @@ class ZanzibarClient:
         schema: SchemaRegistry,
         tenant: TenantId | str = _DEFAULT_TENANT,
         enable_debug: bool = False,
-        max_check_depth: int = 25,
+        max_depth: int = 25,
         tuple_cache: TupleCache | None = None,
     ) -> None:
-        """Create a tenant-scoped client over a schema and relation repository."""
+        """Create a tenant-scoped client over a schema and relation repository.
+
+        `max_depth` limits recursive authorization traversal shared by check,
+        expand, and lookup operations. It defaults to 25.
+        """
 
         self.tenant = tenant if isinstance(tenant, TenantId) else TenantId(tenant)
         self._authorization_engine = AuthorizationEngine(
             relations_repository=relations_repository,
             schema=schema,
-            max_depth=max_check_depth,
+            max_depth=max_depth,
             enable_debug=enable_debug,
             tuple_cache=tuple_cache,
         )
@@ -104,8 +108,8 @@ class ZanzibarClient:
         return self._authorization_engine.enable_debug
 
     @property
-    def max_check_depth(self) -> int:
-        """Return the authorization traversal depth limit."""
+    def max_depth(self) -> int:
+        """Return the traversal depth limit shared by check, expand, and lookup."""
 
         return self._authorization_engine.max_depth
 

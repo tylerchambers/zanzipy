@@ -80,6 +80,32 @@ class TestFlaskZanzibarExtension:
             assert ext.client is not None
             assert ext.client.tenant == TenantId("acme")
 
+    def test_max_depth_argument_and_config_are_passed_to_client(self) -> None:
+        app = Flask("depth-argument")
+        app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(registry=_make_registry())
+        app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+
+        ext = Zanzibar()
+        ext.init_app(app, max_depth=7)
+
+        with app.app_context():
+            assert ext.client is not None
+            assert ext.client.max_depth == 7
+
+        configured_app = Flask("depth-config")
+        configured_app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        configured_app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        configured_app.config["ZANZIBAR_MAX_DEPTH"] = 3
+
+        configured_ext = Zanzibar()
+        configured_ext.init_app(configured_app, max_depth=7)
+
+        with configured_app.app_context():
+            assert configured_ext.client is not None
+            assert configured_ext.client.max_depth == 3
+
     def test_write_and_check_via_proxy(self) -> None:
         app = self._create_app()
 

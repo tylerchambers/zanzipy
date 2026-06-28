@@ -330,7 +330,7 @@ def test_lookup_subject_set_cycles_converge_with_seen_nodes() -> None:
     client = ZanzibarClient(
         relations_repository=InMemoryRelationRepository(),
         schema=registry,
-        max_check_depth=25,
+        max_depth=25,
     )
     client.write_many(
         [
@@ -695,7 +695,7 @@ def test_lookup_cycle_matches_check_for_path_local_exclusion_rewrite() -> None:
     assert client.list_objects("document", "viewer", "user:alice") == checked
 
 
-def test_lookup_filters_complex_userset_candidates_with_check_depth() -> None:
+def test_lookup_filters_complex_userset_candidates_with_traversal_depth() -> None:
     registry = SchemaRegistry()
     registry.register_many(
         [
@@ -721,7 +721,7 @@ def test_lookup_filters_complex_userset_candidates_with_check_depth() -> None:
     client = ZanzibarClient(
         relations_repository=InMemoryRelationRepository(),
         schema=registry,
-        max_check_depth=4,
+        max_depth=4,
     )
     client.write_many(
         [
@@ -752,7 +752,7 @@ def test_lookup_direct_this_leaf_is_not_pruned_by_expression_depth() -> None:
     client = ZanzibarClient(
         relations_repository=InMemoryRelationRepository(),
         schema=registry,
-        max_check_depth=0,
+        max_depth=0,
     )
     client.write("document:spec", "viewer", "user:alice")
 
