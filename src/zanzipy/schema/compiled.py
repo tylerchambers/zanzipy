@@ -7,6 +7,7 @@ from .rules import DirectRule, RewriteRule
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from zanzipy.models import Subject
     from zanzipy.storage.cache.abstract.rules import CompiledRuleCache
 
     from .permissions import PermissionDef
@@ -19,14 +20,43 @@ type UsersetReference = tuple[str, str]
 
 
 @dataclass(frozen=True, slots=True)
+class CompiledSubjectReference:
+    """Allowed stored tuple subject shape for one relation edge."""
+
+    namespace: str
+    relation: str | None = None
+    wildcard: bool = False
+
+    def allows(
+        self,
+        *,
+        namespace: str,
+        entity_id: str,
+        relation: str | None,
+    ) -> bool:
+        """Return whether a concrete stored tuple subject matches this shape."""
+        if self.namespace != namespace:
+            return False
+        if self.wildcard:
+            return relation is None and entity_id == "*"
+        if entity_id == "*":
+            return False
+        if self.relation is None:
+            return relation is None
+        return relation is not None and self.relation == relation
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledRelation:
     """Typed authorization metadata for one relation or permission edge."""
 
     rewrite: RewriteRule
+    allowed_subjects: tuple[CompiledSubjectReference, ...] = ()
     tuple_to_userset_target_types: tuple[str, ...] = ()
     allowed_userset_refs: tuple[UsersetReference, ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "allowed_subjects", tuple(self.allowed_subjects))
         object.__setattr__(
             self,
             "tuple_to_userset_target_types",
@@ -91,6 +121,7 @@ class CompiledAuthorizationModel:
                         rewrite,
                         compiled_rules_cache,
                     ),
+                    allowed_subjects=cls._allowed_subjects(relation),
                     tuple_to_userset_target_types=cls._tuple_to_userset_targets(
                         relation
                     ),
@@ -142,6 +173,84 @@ class CompiledAuthorizationModel:
         """Return allowed subject-set references for a relation edge."""
 
         return self._compiled_relation(resource_type, relation).allowed_userset_refs
+
+    def allows_subject(
+        self,
+        *,
+        resource_type: str,
+        relation: str,
+        subject_type: str,
+        subject_id: str,
+        subject_relation: str | None,
+    ) -> bool:
+        """Return whether a stored tuple subject conforms to a relation schema."""
+        return any(
+            allowed.allows(
+                namespace=subject_type,
+                entity_id=subject_id,
+                relation=subject_relation,
+            )
+            for allowed in self._compiled_relation(
+                resource_type,
+                relation,
+            ).allowed_subjects
+        )
+
+    def allows_tuple_to_userset_subject(
+        self,
+        *,
+        resource_type: str,
+        tuple_relation: str,
+        subject_type: str,
+        subject_id: str,
+        subject_relation: str | None,
+    ) -> bool:
+        """Return whether a tuple-to-userset edge may follow a stored subject."""
+        return (
+            subject_relation is None
+            and subject_id != "*"
+            and subject_type
+            in self.tuple_to_userset_target_types(
+                resource_type=resource_type,
+                tuple_relation=tuple_relation,
+            )
+        )
+
+    def allows_stored_subject(
+        self,
+        *,
+        resource_type: str,
+        relation: str,
+        subject: Subject,
+    ) -> bool:
+        """Return whether a stored tuple subject matches relation metadata."""
+        return self.allows_subject(
+            resource_type=resource_type,
+            relation=relation,
+            subject_type=str(subject.namespace),
+            subject_id=str(subject.id),
+            subject_relation=self._subject_relation(subject),
+        )
+
+    def allows_tuple_to_userset_stored_subject(
+        self,
+        *,
+        resource_type: str,
+        tuple_relation: str,
+        subject: Subject,
+    ) -> bool:
+        """Return whether tuple-to-userset traversal may follow this subject."""
+        return self.allows_tuple_to_userset_subject(
+            resource_type=resource_type,
+            tuple_relation=tuple_relation,
+            subject_type=str(subject.namespace),
+            subject_id=str(subject.id),
+            subject_relation=self._subject_relation(subject),
+        )
+
+    @staticmethod
+    def _subject_relation(subject: Subject) -> str | None:
+        return None if subject.relation is None else str(subject.relation)
 
     def _compiled_relation(self, object_type: str, relation: str) -> CompiledRelation:
         key = (object_type, relation)
@@ -198,3 +307,16 @@ class CompiledAuthorizationModel:
             if subject.relation is not None
         }
         return tuple(sorted(refs))
+
+    @staticmethod
+    def _allowed_subjects(
+        relation: RelationDef,
+    ) -> tuple[CompiledSubjectReference, ...]:
+        return tuple(
+            CompiledSubjectReference(
+                namespace=subject.namespace.value,
+                relation=(None if subject.relation is None else subject.relation.value),
+                wildcard=subject.wildcard,
+            )
+            for subject in relation.allowed_subjects
+        )

@@ -417,6 +417,12 @@ class ExpansionEngine(RewriteRuleDispatcher):
         for t in self._relations.read(TupleFilter.from_object(obj), context=context):
             if str(t.relation) != effective_relation:
                 continue
+            if not self._model.allows_stored_subject(
+                resource_type=object_type,
+                relation=effective_relation,
+                subject=t.subject,
+            ):
+                continue
             # Subject set anchor
             if t.subject.relation is not None:
                 usersets.add(str(t.subject))
@@ -450,6 +456,12 @@ class ExpansionEngine(RewriteRuleDispatcher):
                 continue
             # Only follow object references (no subject-set here)
             if t.subject.relation is not None:
+                continue
+            if not self._model.allows_tuple_to_userset_stored_subject(
+                resource_type=object_type,
+                tuple_relation=tuple_relation,
+                subject=t.subject,
+            ):
                 continue
             next_object_type = str(t.subject.namespace)
             next_object_id = str(t.subject.id)
