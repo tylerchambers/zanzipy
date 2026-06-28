@@ -20,6 +20,7 @@ The extension expects your application to provide (directly or via config):
 - a callable or object that yields a relations repository in `ZANZIBAR_RELATIONS_REPO`
 - optional tenant id in `ZANZIBAR_TENANT`
 - optional tuple cache factory in `ZANZIBAR_TUPLE_CACHE`
+- optional traversal depth limit in `ZANZIBAR_MAX_DEPTH`
 
 You can instead pass these explicitly to `init_app`.
 """
@@ -93,7 +94,7 @@ class Zanzibar:
         tuple_cache: Any | Callable[..., Any] | None = None,
         tenant: TenantId | str | None = None,
         enable_debug: bool | None = None,
-        max_check_depth: int | None = None,
+        max_depth: int | None = None,
     ) -> None:
         """Initialize the extension and bind it to an app.
 
@@ -105,6 +106,11 @@ class Zanzibar:
           - ZANZIBAR_RELATIONS_REPO: object or callable returning a repo
           - ZANZIBAR_TENANT: tenant id string or TenantId (defaults to "default")
           - ZANZIBAR_TUPLE_CACHE: object or callable returning a cache
+          - ZANZIBAR_MAX_DEPTH: traversal depth limit shared by check,
+            expand, and lookup operations
+
+        `max_depth` provides the default traversal limit when
+        `ZANZIBAR_MAX_DEPTH` is not configured.
 
         Factories may accept the Flask app as their only positional argument.
         App-specific state is stored on ``app.extensions`` and the engine is
@@ -147,10 +153,10 @@ class Zanzibar:
                     False if enable_debug is None else enable_debug,
                 )
             ),
-            max_check_depth=int(
+            max_depth=int(
                 app.config.get(
                     "ZANZIBAR_MAX_DEPTH",
-                    25 if max_check_depth is None else max_check_depth,
+                    25 if max_depth is None else max_depth,
                 )
             ),
             tuple_cache=cache,

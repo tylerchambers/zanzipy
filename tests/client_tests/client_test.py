@@ -275,7 +275,7 @@ class TestZanzibarClient:
         assert client.authorization_engine is engine
         assert client.relations_repository is repo
         assert client.schema is registry
-        assert client.max_check_depth == 7
+        assert client.max_depth == 7
         assert client.enable_debug is True
         assert client.check("document:doc", "owner", "user:alice") is True
 
@@ -287,6 +287,18 @@ class TestZanzibarClient:
             "document:doc"
         ]
         assert client.expand("document:doc", "owner").users == {"user:alice"}
+
+    def test_client_max_depth_option(self) -> None:
+        registry = self._base_registry()
+        repo = InMemoryRelationRepository()
+
+        client = ZanzibarClient(
+            relations_repository=repo,
+            schema=registry,
+            max_depth=7,
+        )
+
+        assert client.max_depth == 7
 
     def test_list_objects_happy_and_errors(self) -> None:
         registry = self._base_registry()

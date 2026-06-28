@@ -203,7 +203,7 @@ class TestLookupResourcesParityOracle:
         client = ZanzibarClient(
             relations_repository=InMemoryRelationRepository(),
             schema=registry,
-            max_check_depth=25,
+            max_depth=25,
         )
         client.write_many(
             [
@@ -511,7 +511,7 @@ class TestLookupResourcesParityOracle:
         client = ZanzibarClient(
             relations_repository=InMemoryRelationRepository(),
             schema=registry,
-            max_check_depth=4,
+            max_depth=4,
         )
         client.write_many(
             [
@@ -600,7 +600,7 @@ class TestLookupResourcesParityOracle:
         client = ZanzibarClient(
             relations_repository=InMemoryRelationRepository(),
             schema=registry,
-            max_check_depth=0,
+            max_depth=0,
         )
         client.write("document:spec", "viewer", "user:alice")
 

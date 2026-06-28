@@ -124,7 +124,7 @@ From a checkout, run the non-server examples with `uv run python <path>`. The Fl
 ### Key features 🧰
 - ✨ DSL‑first schema authoring (`SchemaBuilder`, `NamespaceBuilder`).
 - 🔗 Zanzibar semantics: relations, permissions, union/intersection/exclusion, tuple‑to‑userset.
-- ✅ Correctness‑first evaluation: cycle detection, max‑depth limits, and subject expansion.
+- ✅ Correctness‑first evaluation: cycle detection and a shared `max_depth` traversal limit across check, expand, and lookup.
 - 🔎 Reverse lookup: `list_objects` walks subject-bucket edges, so nested usersets and caches work without candidate-object scans.
 - 🧩 Simple client API: `write`, `delete`, `check`, `list_objects`, `expand`.
 - Tenant-scoped revisioned storage: writes return `WriteResult` with a tenant-scoped `RevisionToken`; snapshot reads prefer the token and reject mismatched tenant tokens.
