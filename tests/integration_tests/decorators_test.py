@@ -157,6 +157,60 @@ class TestAuthorizableResourceDecorator:
         perms = d.get_permissions(alice)  # type: ignore[attr-defined]
         assert "view" in perms
 
+    def test_who_can_rejects_wildcard_exclusions(self) -> None:
+        repo = InMemoryRelationRepository()
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="doc",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (
+                            SubjectReference.from_dict(
+                                {"namespace": "user", "wildcard": True}
+                            ),
+                        ),
+                    ),
+                    RelationDef.with_subjects(
+                        "banned",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                    ),
+                ),
+                permissions=(
+                    PermissionDef(
+                        name="viewer_without_banned",
+                        rewrite=ExclusionRule(
+                            base=ComputedUsersetRule("viewer"),
+                            subtract=ComputedUsersetRule("banned"),
+                        ),
+                    ),
+                ),
+            )
+        )
+        client = ZanzibarClient(relations_repository=repo, schema=registry)
+        engine = ZanzibarEngine(client)
+        configure_authorization(engine)
+
+        @authorizable_resource("doc")
+        class Doc:
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(RelationTuple.from_string("doc:1#viewer@user:*")),
+                TupleMutation.touch(
+                    RelationTuple.from_string("doc:1#banned@user:alice")
+                ),
+            ),
+        )
+        doc = Doc("1")
+
+        with pytest.raises(ValueError, match="wildcard subjects with exclusions"):
+            doc.who_can("viewer_without_banned")  # type: ignore[attr-defined]
+
     def test_group_userset_permissions_through_mixins(self) -> None:
         repo = InMemoryRelationRepository()
         client = ZanzibarClient(relations_repository=repo, schema=_group_registry())
