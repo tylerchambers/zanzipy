@@ -1,4 +1,5 @@
 from zanzipy.models import RelationTuple, TupleFilter
+from zanzipy.storage.cache.abstract.tuples import TupleCache
 from zanzipy.storage.cache.concrete.lru import LruTupleCache
 from zanzipy.storage.repos.concrete.memory.relations import InMemoryRelationRepository
 from zanzipy.storage.repos.decorators.cached_relations import CachedRelationRepository
@@ -32,7 +33,108 @@ def _rt(
     )
 
 
+class _FailingTupleCache(TupleCache):
+    def __init__(
+        self,
+        *,
+        fail_object_get: bool = False,
+        fail_object_set: bool = False,
+        fail_subject_get: bool = False,
+        fail_subject_set: bool = False,
+    ) -> None:
+        self._fail_object_get = fail_object_get
+        self._fail_object_set = fail_object_set
+        self._fail_subject_get = fail_subject_get
+        self._fail_subject_set = fail_subject_set
+
+    def get_by_object(
+        self,
+        obj: object,
+        *,
+        context: ReadContext,
+    ) -> tuple[RelationTuple, ...] | None:
+        if self._fail_object_get:
+            raise ConnectionError("object cache unavailable")
+        return None
+
+    def set_by_object(
+        self,
+        obj: object,
+        *,
+        context: ReadContext,
+        tuples: object,
+    ) -> None:
+        if self._fail_object_set:
+            raise PermissionError("object cache write denied")
+
+    def get_by_subject(
+        self,
+        subject: object,
+        *,
+        context: ReadContext,
+    ) -> tuple[RelationTuple, ...] | None:
+        if self._fail_subject_get:
+            raise ConnectionError("subject cache unavailable")
+        return None
+
+    def set_by_subject(
+        self,
+        subject: object,
+        *,
+        context: ReadContext,
+        tuples: object,
+    ) -> None:
+        if self._fail_subject_set:
+            raise PermissionError("subject cache write denied")
+
+
 class TestCachedRelationRepository:
+    def test_object_cache_get_failure_falls_back_to_backend(self) -> None:
+        backend = InMemoryRelationRepository()
+        cache = _FailingTupleCache(fail_object_get=True)
+        repo = CachedRelationRepository(backend, cache=cache)
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+
+        assert list(
+            repo.by_object(tuple_.object, context=_read_context(write.revision))
+        ) == [tuple_]
+
+    def test_object_cache_set_failure_still_returns_backend_result(self) -> None:
+        backend = InMemoryRelationRepository()
+        cache = _FailingTupleCache(fail_object_set=True)
+        repo = CachedRelationRepository(backend, cache=cache)
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+
+        assert list(
+            repo.by_object(tuple_.object, context=_read_context(write.revision))
+        ) == [tuple_]
+
+    def test_subject_cache_get_failure_falls_back_to_backend(self) -> None:
+        backend = InMemoryRelationRepository()
+        cache = _FailingTupleCache(fail_subject_get=True)
+        repo = CachedRelationRepository(backend, cache=cache)
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+        filt = TupleFilter(subject_type="user", subject_id="alice")
+
+        assert list(repo.read_reverse(filt, context=_read_context(write.revision))) == [
+            tuple_
+        ]
+
+    def test_subject_cache_set_failure_still_returns_backend_result(self) -> None:
+        backend = InMemoryRelationRepository()
+        cache = _FailingTupleCache(fail_subject_set=True)
+        repo = CachedRelationRepository(backend, cache=cache)
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+        filt = TupleFilter(subject_type="user", subject_id="alice")
+
+        assert list(repo.read_reverse(filt, context=_read_context(write.revision))) == [
+            tuple_
+        ]
+
     def test_object_cache_is_revision_scoped(self) -> None:
         backend = InMemoryRelationRepository()
         cache = LruTupleCache(max_entries=100, ttl_seconds=None)
