@@ -57,50 +57,48 @@ def _rule() -> RewriteRule:
     return RewriteRule.from_dict({"type": "direct"})
 
 
-def test_redis_compiled_rule_cache_roundtrip() -> None:
-    client = _FakeRedis()
-    cache = RedisCompiledRuleCache(client=client, ttl_seconds=None, codec=_Codec())
+class TestRedisCompiledRuleCache:
+    def test_redis_compiled_rule_cache_roundtrip(self) -> None:
+        client = _FakeRedis()
+        cache = RedisCompiledRuleCache(client=client, ttl_seconds=None, codec=_Codec())
 
-    rule = _rule()
+        rule = _rule()
 
-    assert cache.get("ns", "r") is None
-    cache.set("ns", "r", rule)
-    got = cache.get("ns", "r")
-    assert isinstance(got, RewriteRule)
-    assert got.to_dict() == {"type": "direct"}
+        assert cache.get("ns", "r") is None
+        cache.set("ns", "r", rule)
+        got = cache.get("ns", "r")
+        assert isinstance(got, RewriteRule)
+        assert got.to_dict() == {"type": "direct"}
 
-    cache.invalidate("ns", "r")
-    assert cache.get("ns", "r") is None
+        cache.invalidate("ns", "r")
+        assert cache.get("ns", "r") is None
 
+    def test_redis_compiled_rule_cache_invalid_data(self) -> None:
+        client = _FakeRedis()
+        codec = _Codec()
+        bad_key = codec.key_for_rule("ns", "bad")
+        client.set(bad_key, b"not-json")
 
-def test_redis_compiled_rule_cache_invalid_data() -> None:
-    client = _FakeRedis()
-    codec = _Codec()
-    bad_key = codec.key_for_rule("ns", "bad")
-    client.set(bad_key, b"not-json")
+        cache = RedisCompiledRuleCache(client=client, ttl_seconds=None, codec=codec)
+        assert cache.get("ns", "bad") is None
+        assert client.get_for_test(bad_key) is None
 
-    cache = RedisCompiledRuleCache(client=client, ttl_seconds=None, codec=codec)
-    assert cache.get("ns", "bad") is None
-    assert client.get_for_test(bad_key) is None
+    def test_redis_compiled_rule_cache_invalidates_namespace(self) -> None:
+        client = _FakeRedis()
+        cache = RedisCompiledRuleCache(client=client, ttl_seconds=None, codec=_Codec())
 
+        cache.set("ns1", "a", _rule())
+        cache.set("ns1", "b", _rule())
+        cache.set("ns2", "a", _rule())
 
-def test_redis_compiled_rule_cache_invalidates_namespace() -> None:
-    client = _FakeRedis()
-    cache = RedisCompiledRuleCache(client=client, ttl_seconds=None, codec=_Codec())
+        cache.invalidate_namespace("ns1")
 
-    cache.set("ns1", "a", _rule())
-    cache.set("ns1", "b", _rule())
-    cache.set("ns2", "a", _rule())
+        assert cache.get("ns1", "a") is None
+        assert cache.get("ns1", "b") is None
+        assert cache.get("ns2", "a") is not None
 
-    cache.invalidate_namespace("ns1")
+    def test_redis_compiled_rule_cache_rejects_non_positive_ttl(self) -> None:
+        client = _FakeRedis()
 
-    assert cache.get("ns1", "a") is None
-    assert cache.get("ns1", "b") is None
-    assert cache.get("ns2", "a") is not None
-
-
-def test_redis_compiled_rule_cache_rejects_non_positive_ttl() -> None:
-    client = _FakeRedis()
-
-    with pytest.raises(ValueError, match="ttl_seconds"):
-        RedisCompiledRuleCache(client=client, ttl_seconds=0)
+        with pytest.raises(ValueError, match="ttl_seconds"):
+            RedisCompiledRuleCache(client=client, ttl_seconds=0)
