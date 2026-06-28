@@ -21,6 +21,7 @@ from zanzipy.storage.revision import (
     TupleMutation,
     WriteContext,
     WriteResult,
+    validated_mutation_batch,
 )
 
 if TYPE_CHECKING:
@@ -151,7 +152,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
             ValueError: If a mutation contains an unknown operation.
         """
         retry_errors = (self._sa.exc.IntegrityError, self._sa.exc.OperationalError)
-        mutations = tuple(mutations)
+        mutations = validated_mutation_batch(mutations)
         for attempt in range(3):
             session = self._session_factory()
             revision: Revision | None = None

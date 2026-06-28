@@ -21,6 +21,7 @@ from zanzipy.storage.revision import (
     TupleMutation,
     WriteContext,
     WriteResult,
+    validated_mutation_batch,
 )
 
 if TYPE_CHECKING:
@@ -133,6 +134,7 @@ class SQLiteRelationRepository(RelationRepository):
         Raises:
             ValueError: If a mutation contains an unknown operation.
         """
+        mutations = validated_mutation_batch(mutations)
         revision: Revision | None = None
         self._conn.execute("BEGIN IMMEDIATE")
         try:

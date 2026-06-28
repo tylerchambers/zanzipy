@@ -14,6 +14,7 @@ from zanzipy.storage.revision import (
     TupleMutation,
     WriteContext,
     WriteResult,
+    validated_mutation_batch,
 )
 
 
@@ -41,6 +42,7 @@ class InMemoryRelationRepository(RelationRepository):
         Raises:
             ValueError: If a mutation contains an unknown operation.
         """
+        mutations = validated_mutation_batch(mutations)
         tenant_key = str(context.tenant)
         self._ensure_tenant(tenant_key)
         staged = dict(self._tuples[tenant_key])
