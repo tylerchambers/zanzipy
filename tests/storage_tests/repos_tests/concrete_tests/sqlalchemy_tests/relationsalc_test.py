@@ -7,6 +7,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateIndex
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from sqlalchemy.engine import Engine
 
 from zanzipy.models import RelationTuple, TupleFilter
@@ -28,12 +30,16 @@ def _read_context(revision: Revision, tenant: TenantId = TENANT) -> ReadContext:
     return ReadContext(tenant, revision)
 
 
-def _repo() -> SQLAlchemyRelationRepository:
+@pytest.fixture
+def repo() -> Iterator[SQLAlchemyRelationRepository]:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     repo = SQLAlchemyRelationRepository(session_factory)
     repo.create_schema(engine)
-    return repo
+    try:
+        yield repo
+    finally:
+        engine.dispose()
 
 
 def _postgresql_index_sql(
@@ -45,8 +51,10 @@ def _postgresql_index_sql(
 
 
 class TestSQLAlchemyRelationRepository:
-    def test_write_delete_and_readd_create_snapshot_windows(self) -> None:
-        repo = _repo()
+    def test_write_delete_and_readd_create_snapshot_windows(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         t = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
         initial = repo.head_revision(TENANT)
@@ -70,8 +78,10 @@ class TestSQLAlchemyRelationRepository:
         assert repo.get(t, context=_read_context(delete.revision)) is None
         assert repo.get(t, context=_read_context(readd.revision)) == t
 
-    def test_read_and_read_reverse_respect_revision(self) -> None:
-        repo = _repo()
+    def test_read_and_read_reverse_respect_revision(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         viewer = RelationTuple.from_string("document:doc1#viewer@user:alice")
         owner = RelationTuple.from_string("document:doc1#owner@user:bob")
 
@@ -108,8 +118,10 @@ class TestSQLAlchemyRelationRepository:
             repo.by_object(viewer.object, context=_read_context(delete.revision))
         ) == [owner]
 
-    def test_watch_returns_committed_changes_after_revision(self) -> None:
-        repo = _repo()
+    def test_watch_returns_committed_changes_after_revision(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         t = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
         write = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
@@ -123,8 +135,10 @@ class TestSQLAlchemyRelationRepository:
         assert [change.tenant for change in changes] == [TENANT, TENANT]
         assert [change.relation_tuple for change in changes] == [t, t]
 
-    def test_tenants_have_isolated_tuple_state_and_revision_sequences(self) -> None:
-        repo = _repo()
+    def test_tenants_have_isolated_tuple_state_and_revision_sequences(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         t = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
         first_write = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
@@ -149,8 +163,10 @@ class TestSQLAlchemyRelationRepository:
             repo.get(t, context=_read_context(other_write.revision, OTHER_TENANT)) == t
         )
 
-    def test_new_tenant_empty_and_future_revisions_are_tenant_scoped(self) -> None:
-        repo = _repo()
+    def test_new_tenant_empty_and_future_revisions_are_tenant_scoped(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         t = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
         other_write = repo.write(WriteContext(OTHER_TENANT), (TupleMutation.touch(t),))
@@ -161,8 +177,10 @@ class TestSQLAlchemyRelationRepository:
         with pytest.raises(ValueError, match="newer than head"):
             list(repo.read(TupleFilter(), context=_read_context(Revision(1))))
 
-    def test_watch_is_tenant_scoped(self) -> None:
-        repo = _repo()
+    def test_watch_is_tenant_scoped(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         tenant_tuple = RelationTuple.from_string("document:doc1#viewer@user:alice")
         other_tuple = RelationTuple.from_string("document:doc2#viewer@user:bob")
 
@@ -189,8 +207,10 @@ class TestSQLAlchemyRelationRepository:
         assert [change.tenant for change in other_changes] == [OTHER_TENANT]
         assert [change.relation_tuple for change in other_changes] == [other_tuple]
 
-    def test_invalid_mutation_rolls_back_partial_write(self) -> None:
-        repo = _repo()
+    def test_invalid_mutation_rolls_back_partial_write(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         t = RelationTuple.from_string("document:doc1#viewer@user:alice")
         bad = TupleMutation(t, "invalid")  # type: ignore[arg-type]
 
@@ -203,9 +223,10 @@ class TestSQLAlchemyRelationRepository:
         assert write.revision == Revision(1)
         assert repo.get(t, context=_read_context(write.revision)) == t
 
-    def test_metadata_has_tenant_scoped_keys_and_foreign_keys(self) -> None:
-        repo = _repo()
-
+    def test_metadata_has_tenant_scoped_keys_and_foreign_keys(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         assert [column.name for column in repo._revisions.primary_key.columns] == [
             "tenant_id",
             "revision",
@@ -222,9 +243,10 @@ class TestSQLAlchemyRelationRepository:
         assert ("tenant_id", "created_revision") in fk_columns
         assert ("tenant_id", "deleted_revision") in fk_columns
 
-    def test_postgresql_indexes_match_mvcc_access_paths(self) -> None:
-        repo = _repo()
-
+    def test_postgresql_indexes_match_mvcc_access_paths(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         active_unique = _postgresql_index_sql(repo, "idx_rt_active_unique")
         assert "UNIQUE INDEX idx_rt_active_unique" in active_unique
         assert "(tenant_id, tuple_key)" in active_unique
@@ -276,8 +298,10 @@ class TestSQLAlchemyRelationRepository:
 
         assert emitted == []
 
-    def test_revision_columns_use_bigint_for_postgresql(self) -> None:
-        repo = _repo()
+    def test_revision_columns_use_bigint_for_postgresql(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         postgresql_dialect = postgresql.dialect()
         sqlite_dialect = sqlite.dialect()
 
@@ -306,8 +330,10 @@ class TestSQLAlchemyRelationRepository:
             == "INTEGER"
         )
 
-    def test_info_reports_backend_tables_columns_and_tenant_heads(self) -> None:
-        repo = _repo()
+    def test_info_reports_backend_tables_columns_and_tenant_heads(
+        self,
+        repo: SQLAlchemyRelationRepository,
+    ) -> None:
         tuple_ = RelationTuple.from_string("document:doc1#viewer@user:alice")
 
         repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
