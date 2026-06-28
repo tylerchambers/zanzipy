@@ -10,6 +10,7 @@ from zanzipy.schema.rules import (
     ComputedUsersetRule,
     DirectRule,
     IntersectionRule,
+    RewriteRule,
     ThisRule,
     TupleToUsersetRule,
     UnionRule,
@@ -36,6 +37,42 @@ class TestNamespaceDef:
         }
         ns = NamespaceDef.from_dict(data)
         assert ns.to_dict() == data
+
+    def test_constructor_accepts_single_relation_and_permission_definitions(
+        self,
+    ) -> None:
+        relation = RelationDef.with_subjects(
+            "viewer",
+            (SubjectReference(namespace=NamespaceId("user")),),
+        )
+        permission = PermissionDef("can_view", ComputedUsersetRule("viewer"))
+
+        ns = NamespaceDef(
+            name="document",
+            relations=relation,
+            permissions=permission,
+        )
+
+        assert list(ns.relations) == ["viewer"]
+        assert list(ns.permissions) == ["can_view"]
+
+    def test_from_dict_rejects_non_mapping_collections(self) -> None:
+        with pytest.raises(TypeError, match="'relations' must be a mapping"):
+            NamespaceDef.from_dict(
+                {
+                    "name": "document",
+                    "relations": ["viewer"],
+                    "permissions": {},
+                }
+            )
+        with pytest.raises(TypeError, match="'permissions' must be a mapping"):
+            NamespaceDef.from_dict(
+                {
+                    "name": "document",
+                    "relations": {},
+                    "permissions": ["can_view"],
+                }
+            )
 
     def test_from_dict_rejects_empty_allowed_subject_relation(self) -> None:
         data = {
@@ -78,6 +115,20 @@ class TestNamespaceDef:
 
         with pytest.raises(ValueError, match="Unknown RewriteRule type"):
             NamespaceDef.from_dict(data)
+
+    def test_constructor_rejects_unknown_rewrite_node_subclass(self) -> None:
+        class _UnknownRule(RewriteRule):
+            def to_dict(self) -> dict:
+                return {"type": "unknown"}
+
+        relation = RelationDef.with_subjects(
+            "viewer",
+            (SubjectReference(namespace=NamespaceId("user")),),
+            rewrite=_UnknownRule(),
+        )
+
+        with pytest.raises(ValueError, match="unknown rewrite node type"):
+            NamespaceDef(name="document", relations=relation)
 
     def test_full_roundtrip(self) -> None:
         subjects_user = (SubjectReference(namespace=NamespaceId("user")),)
@@ -309,3 +360,43 @@ class TestNamespaceDef:
         }
         with pytest.raises(ValueError, match=r"Relation mapping key 'viewer'"):
             NamespaceDef.from_dict(data)
+
+    def test_from_dict_permission_key_mismatch_raises(self) -> None:
+        data = {
+            "name": "doc",
+            "description": None,
+            "relations": {
+                "viewer": {
+                    "type": "relation",
+                    "name": "viewer",
+                    "allowed_subjects": [
+                        {"namespace": "user", "relation": None, "wildcard": False}
+                    ],
+                    "rewrite": None,
+                    "description": None,
+                }
+            },
+            "permissions": {
+                "can_view": {
+                    "type": "permission",
+                    "name": "wrong",
+                    "rewrite": {"type": "computed_userset", "relation": "viewer"},
+                    "description": None,
+                }
+            },
+        }
+
+        with pytest.raises(ValueError, match=r"Permission mapping key 'can_view'"):
+            NamespaceDef.from_dict(data)
+
+    def test_permission_without_rewrite_raises(self) -> None:
+        with pytest.raises(ValueError, match="must define a rewrite"):
+            NamespaceDef(
+                name="doc",
+                permissions=(
+                    PermissionDef(
+                        name="can_view",
+                        rewrite=None,  # type: ignore[arg-type]
+                    ),
+                ),
+            )

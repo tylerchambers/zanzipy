@@ -164,6 +164,22 @@ class TestSchemaRegistry:
         with pytest.raises(ValueError, match=r"Unknown namespace: document"):
             registry.update_many([base])
 
+    def test_register_many_rejects_duplicate_namespace_names(self) -> None:
+        registry = SchemaRegistry()
+
+        with pytest.raises(ValueError, match="Duplicate namespace names"):
+            registry.register_many([_basic_namespace(), _basic_namespace()])
+
+        assert registry.list_namespaces() == []
+
+    def test_update_many_rejects_duplicate_namespace_names(self) -> None:
+        registry = SchemaRegistry()
+        base = _basic_namespace()
+        registry.register(base)
+
+        with pytest.raises(ValueError, match="Duplicate namespace names"):
+            registry.update_many([base, base])
+
     def test_register_many_validates_tuple_to_userset_target_namespace(self) -> None:
         subjects = (SubjectReference(namespace=NamespaceId("user")),)
         folder = NamespaceDef(
@@ -227,6 +243,38 @@ class TestSchemaRegistry:
 
         assert registry.list_namespaces() == []
 
+    def test_register_many_rejects_missing_tuple_to_userset_target_namespace(
+        self,
+    ) -> None:
+        document = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef(
+                    name="parent",
+                    allowed_subjects=(
+                        SubjectReference(namespace=NamespaceId("folder")),
+                    ),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="can_view",
+                    rewrite=TupleToUsersetRule(
+                        tuple_relation="parent",
+                        computed_relation="viewer",
+                    ),
+                ),
+            ),
+        )
+        registry = SchemaRegistry()
+
+        with pytest.raises(
+            ValueError, match="target namespace 'folder' is not registered"
+        ):
+            registry.register(document)
+
+        assert registry.list_namespaces() == []
+
     def test_register_rejects_missing_subject_set_namespace(self) -> None:
         document = NamespaceDef(
             name="document",
@@ -248,6 +296,61 @@ class TestSchemaRegistry:
             ValueError,
             match=r"allowed subject namespace 'group' is not registered",
         ):
+            registry.register(document)
+
+    def test_register_rejects_missing_subject_set_relation(self) -> None:
+        document = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef(
+                    name="viewer",
+                    allowed_subjects=(
+                        SubjectReference(
+                            namespace=NamespaceId("group"),
+                            relation="member",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        group = NamespaceDef(
+            name="group",
+            relations=(
+                RelationDef(
+                    name="admin",
+                    allowed_subjects=(SubjectReference(namespace=NamespaceId("user")),),
+                ),
+            ),
+        )
+        registry = SchemaRegistry()
+
+        with pytest.raises(ValueError, match=r"group#member'.*not a known relation"):
+            registry.register_many([document, group])
+
+    def test_register_rejects_tuple_to_userset_without_object_targets(self) -> None:
+        document = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef(
+                    name="parent",
+                    allowed_subjects=(
+                        SubjectReference(namespace=NamespaceId("user"), wildcard=True),
+                    ),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="can_view",
+                    rewrite=TupleToUsersetRule(
+                        tuple_relation="parent",
+                        computed_relation="viewer",
+                    ),
+                ),
+            ),
+        )
+        registry = SchemaRegistry()
+
+        with pytest.raises(ValueError, match="has no object subject targets"):
             registry.register(document)
 
     def test_diff_namespaces(self) -> None:

@@ -88,7 +88,229 @@ class _FailingTupleCache(TupleCache):
             raise PermissionError("subject cache write denied")
 
 
+class _InspectableRelationRepository(InMemoryRelationRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.head_revision_calls = 0
+        self.get_calls = 0
+        self.read_calls = 0
+        self.read_reverse_calls = 0
+        self.ping_calls = 0
+        self.close_calls = 0
+        self.ping_result = True
+
+    def head_revision(self, tenant: TenantId) -> Revision:
+        self.head_revision_calls += 1
+        return super().head_revision(tenant)
+
+    def get(
+        self,
+        key: RelationTuple,
+        *,
+        context: ReadContext,
+    ) -> RelationTuple | None:
+        self.get_calls += 1
+        return super().get(key, context=context)
+
+    def read(
+        self,
+        filter: TupleFilter,
+        *,
+        context: ReadContext,
+    ) -> list[RelationTuple]:
+        self.read_calls += 1
+        return list(super().read(filter, context=context))
+
+    def read_reverse(
+        self,
+        filter: TupleFilter,
+        *,
+        context: ReadContext,
+    ) -> list[RelationTuple]:
+        self.read_reverse_calls += 1
+        return list(super().read_reverse(filter, context=context))
+
+    def ping(self) -> bool:
+        self.ping_calls += 1
+        return self.ping_result
+
+    def info(self) -> dict[str, object]:
+        return {
+            "backend": "inspectable",
+            "reads": self.read_calls,
+            "reverse_reads": self.read_reverse_calls,
+        }
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _InspectableTupleCache(TupleCache):
+    def __init__(
+        self,
+        *,
+        object_bucket: tuple[RelationTuple, ...] | None = None,
+        subject_bucket: tuple[RelationTuple, ...] | None = None,
+        ping_result: bool = True,
+    ) -> None:
+        self.object_bucket = object_bucket
+        self.subject_bucket = subject_bucket
+        self.ping_result = ping_result
+        self.object_gets = 0
+        self.object_sets: list[tuple[RelationTuple, ...]] = []
+        self.subject_gets = 0
+        self.subject_sets: list[tuple[RelationTuple, ...]] = []
+        self.ping_calls = 0
+        self.close_calls = 0
+
+    def get_by_object(
+        self,
+        obj: object,
+        *,
+        context: ReadContext,
+    ) -> tuple[RelationTuple, ...] | None:
+        self.object_gets += 1
+        return self.object_bucket
+
+    def set_by_object(
+        self,
+        obj: object,
+        *,
+        context: ReadContext,
+        tuples: object,
+    ) -> None:
+        bucket = tuple(tuples)  # type: ignore[arg-type]
+        self.object_sets.append(bucket)
+        self.object_bucket = bucket
+
+    def get_by_subject(
+        self,
+        subject: object,
+        *,
+        context: ReadContext,
+    ) -> tuple[RelationTuple, ...] | None:
+        self.subject_gets += 1
+        return self.subject_bucket
+
+    def set_by_subject(
+        self,
+        subject: object,
+        *,
+        context: ReadContext,
+        tuples: object,
+    ) -> None:
+        bucket = tuple(tuples)  # type: ignore[arg-type]
+        self.subject_sets.append(bucket)
+        self.subject_bucket = bucket
+
+    def ping(self) -> bool:
+        self.ping_calls += 1
+        return self.ping_result
+
+    def info(self) -> dict[str, object]:
+        return {
+            "cache": "inspectable",
+            "object_gets": self.object_gets,
+            "subject_gets": self.subject_gets,
+        }
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 class TestCachedRelationRepository:
+    def test_object_cache_hit_returns_cached_bucket_without_backend_read(self) -> None:
+        backend = _InspectableRelationRepository()
+        cached = _rt("doc", "1", "viewer", "user", "alice")
+        cache = _InspectableTupleCache(object_bucket=(cached,))
+        repo = CachedRelationRepository(backend, cache=cache)
+
+        result = list(repo.by_object(cached.object, context=_read_context(Revision(9))))
+
+        assert result == [cached]
+        assert backend.read_calls == 0
+        assert cache.object_gets == 1
+        assert cache.object_sets == []
+
+    def test_subject_cache_hit_filters_bucket_without_backend_reverse_read(
+        self,
+    ) -> None:
+        backend = _InspectableRelationRepository()
+        direct = _rt("doc", "1", "viewer", "group", "eng")
+        userset = _rt("doc", "2", "viewer", "group", "eng", "member")
+        cache = _InspectableTupleCache(subject_bucket=(direct, userset))
+        repo = CachedRelationRepository(backend, cache=cache)
+        filter_ = TupleFilter.from_subject(direct.subject)
+
+        result = list(repo.read_reverse(filter_, context=_read_context(Revision(9))))
+
+        assert result == [direct]
+        assert backend.read_reverse_calls == 0
+        assert cache.subject_gets == 1
+        assert cache.subject_sets == []
+
+    def test_non_subject_reverse_filter_delegates_without_cache_lookup(self) -> None:
+        backend = _InspectableRelationRepository()
+        cache = _InspectableTupleCache()
+        repo = CachedRelationRepository(backend, cache=cache)
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+
+        result = list(
+            repo.read_reverse(
+                TupleFilter(relation="viewer"),
+                context=_read_context(write.revision),
+            )
+        )
+
+        assert result == [tuple_]
+        assert backend.read_reverse_calls == 1
+        assert cache.object_gets == 0
+        assert cache.subject_gets == 0
+
+    def test_delegated_helpers_use_backend_and_cache_diagnostics(self) -> None:
+        backend = _InspectableRelationRepository()
+        cache = _InspectableTupleCache()
+        repo = CachedRelationRepository(backend, cache=cache)
+        tuple_ = _rt("doc", "1", "viewer", "user", "alice")
+        write = repo.write(WriteContext(TENANT), (TupleMutation.touch(tuple_),))
+
+        assert repo.head_revision(TENANT) == write.revision
+        assert backend.head_revision_calls == 1
+        assert repo.get(tuple_, context=_read_context(write.revision)) == tuple_
+        assert backend.get_calls == 1
+        assert repo.ping() is True
+        assert backend.ping_calls == 1
+        assert cache.ping_calls == 1
+        assert repo.info() == {
+            "decorator": "CachedRelationRepository",
+            "backend": {
+                "backend": "inspectable",
+                "reads": 0,
+                "reverse_reads": 0,
+            },
+            "cache": {
+                "cache": "inspectable",
+                "object_gets": 0,
+                "subject_gets": 0,
+            },
+        }
+
+        repo.close()
+
+        assert backend.close_calls == 1
+        assert cache.close_calls == 1
+
+    def test_ping_short_circuits_cache_when_backend_is_unhealthy(self) -> None:
+        backend = _InspectableRelationRepository()
+        backend.ping_result = False
+        cache = _InspectableTupleCache()
+        repo = CachedRelationRepository(backend, cache=cache)
+
+        assert repo.ping() is False
+        assert backend.ping_calls == 1
+        assert cache.ping_calls == 0
+
     def test_object_cache_get_failure_falls_back_to_backend(self) -> None:
         backend = InMemoryRelationRepository()
         cache = _FailingTupleCache(fail_object_get=True)

@@ -151,21 +151,6 @@ class InMemoryRelationRepository(RelationWriteValidationMixin, RelationRepositor
         self._revisions[tenant_key] = Revision(0)
         self._changes[tenant_key] = []
 
-    def _touch(self, tenant_key: str, relation_tuple: RelationTuple) -> bool:
-        key = str(relation_tuple)
-        tuples = self._tuples[tenant_key]
-        if key in tuples:
-            return False
-        tuples[key] = relation_tuple
-        return True
-
-    def _delete(
-        self,
-        tenant_key: str,
-        relation_tuple: RelationTuple,
-    ) -> RelationTuple | None:
-        return self._tuples[tenant_key].pop(str(relation_tuple), None)
-
     def _commit(
         self,
         tenant: TenantId,

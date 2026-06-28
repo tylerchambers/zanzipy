@@ -41,3 +41,17 @@ class TestLruCompiledRuleCache:
         assert cache.get("ns1", "a") is None
         assert cache.get("ns1", "b") is None
         assert cache.get("ns2", "a") == 3
+
+    def test_ping_info_and_close_report_store_state(self) -> None:
+        cache = LruCompiledRuleCache[int](max_entries=3, ttl_seconds=None)
+        cache.set("ns", "a", 1)
+
+        info = cache.info()
+        assert cache.ping() is True
+        assert info["max_entries"] == 3
+        assert info["size"] == 1
+
+        cache.close()
+
+        assert cache.get("ns", "a") is None
+        assert cache.info()["size"] == 0

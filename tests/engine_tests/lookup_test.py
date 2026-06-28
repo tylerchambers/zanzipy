@@ -93,6 +93,37 @@ class TestLookupSubjectMatching:
         ]
         assert client.list_objects("document", "viewer", "service:alice") == []
 
+    def test_lookup_accepts_wildcard_subject_as_exact_subject(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (
+                            _user_ref(),
+                            SubjectReference(namespace="user", wildcard=True),
+                        ),
+                    ),
+                ),
+            )
+        )
+        client = ZanzibarClient(
+            relations_repository=InMemoryRelationRepository(),
+            schema=registry,
+        )
+        client.write_many(
+            [
+                ("document:public", "viewer", "user:*"),
+                ("document:private", "viewer", "user:alice"),
+            ]
+        )
+
+        assert client.list_objects("document", "viewer", "user:*") == [
+            "document:public"
+        ]
+
     def test_lookup_subject_bucket_filters_exact_direct_subjects(self) -> None:
         registry = SchemaRegistry()
         registry.register_many(

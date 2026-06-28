@@ -162,6 +162,8 @@ class TestSubjectReference:
         s_ns = SubjectReference(namespace=NamespaceId("user"))
         assert s_str == s_ns
         assert hash(s_str) == hash(s_ns)
+        assert s_str == s_str
+        assert s_str != object()
 
     @pytest.mark.parametrize(
         "ns",
@@ -175,3 +177,27 @@ class TestSubjectReference:
     def test_invalid_namespace_identifiers_with_str(self, ns: str) -> None:
         with pytest.raises(IdentifierValidationError):
             SubjectReference(namespace=ns)
+
+    def test_rejects_non_namespace_type(self) -> None:
+        with pytest.raises(TypeError, match="NamespaceId or str"):
+            SubjectReference(namespace=object())  # type: ignore[arg-type]
+
+    def test_rejects_non_relation_type(self) -> None:
+        with pytest.raises(TypeError, match="Relation, str, or None"):
+            SubjectReference(namespace="group", relation=object())  # type: ignore[arg-type]
+
+    def test_equality_with_unrelated_object_is_false(self) -> None:
+        assert SubjectReference(namespace="user") != object()
+
+    def test_allows_rejects_namespace_mismatch_and_userset_direct_mismatch(
+        self,
+    ) -> None:
+        userset = SubjectReference(namespace="group", relation="member")
+
+        assert (
+            userset.allows(namespace="other", entity_id="eng", relation="member")
+            is False
+        )
+        assert (
+            userset.allows(namespace="group", entity_id="eng", relation=None) is False
+        )

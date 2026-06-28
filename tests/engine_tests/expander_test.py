@@ -688,6 +688,121 @@ class TestExpansionEngine:
         with pytest.raises(ValueError, match="Unknown relation or permission"):
             engine.expand("document", "doc", "missing", context=_context(repo))
 
+    def test_direct_expansion_keeps_non_user_principals_in_usersets(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (SubjectReference.from_dict({"namespace": "service"}),),
+                    ),
+                ),
+            )
+        )
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#viewer@service:bot")
+                ),
+            ),
+        )
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
+
+        subjects = engine.expand("document", "doc", "viewer", context=_context(repo))
+
+        assert subjects.users == set()
+        assert subjects.usersets == {"service:bot"}
+
+    def test_direct_expansion_skips_subjects_not_allowed_by_schema(self) -> None:
+        registry = SchemaRegistry()
+        registry.register(
+            NamespaceDef(
+                name="document",
+                relations=(
+                    RelationDef.with_subjects(
+                        "viewer",
+                        (SubjectReference.from_dict({"namespace": "user"}),),
+                    ),
+                ),
+            )
+        )
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#viewer@service:bot")
+                ),
+            ),
+        )
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
+
+        subjects = engine.expand("document", "doc", "viewer", context=_context(repo))
+
+        assert subjects.users == set()
+        assert subjects.usersets == set()
+
+    def test_tuple_to_userset_expansion_ignores_subject_set_edges(self) -> None:
+        registry = SchemaRegistry()
+        folder = NamespaceDef(
+            name="folder",
+            relations=(
+                RelationDef.with_subjects(
+                    "viewer",
+                    (SubjectReference.from_dict({"namespace": "user"}),),
+                ),
+            ),
+        )
+        document = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "parent",
+                    (
+                        SubjectReference.from_dict({"namespace": "folder"}),
+                        SubjectReference.from_dict(
+                            {"namespace": "folder", "relation": "viewer"}
+                        ),
+                    ),
+                ),
+            ),
+            permissions=(
+                PermissionDef("can_view", TupleToUsersetRule("parent", "viewer")),
+            ),
+        )
+        registry.register_many([folder, document])
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:doc#parent@folder:f1#viewer")
+                ),
+                TupleMutation.touch(
+                    RelationTuple.from_string("folder:f1#viewer@user:alice")
+                ),
+            ),
+        )
+        engine = ExpansionEngine(
+            relations_repository=repo,
+            authorization_model=_model(registry),
+        )
+
+        subjects = engine.expand("document", "doc", "can_view", context=_context(repo))
+
+        assert subjects.users == set()
+        assert subjects.usersets == set()
+
 
 class TestSubjectSetOps:
     def test_union_merges_both_buckets(self) -> None:

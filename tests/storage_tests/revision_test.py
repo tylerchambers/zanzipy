@@ -4,12 +4,16 @@ from zanzipy.models import RelationTuple
 from zanzipy.storage.revision import (
     AtExactRevision,
     AtLeastAsFresh,
+    Consistency,
     FullyConsistent,
+    ReadContext,
     RelationshipChange,
     RelationshipOperation,
     Revision,
     RevisionToken,
     TenantId,
+    WriteContext,
+    WriteResult,
     revision_for_consistency,
 )
 
@@ -26,6 +30,49 @@ class TestRevisionValueObjects:
             TenantId("")
         with pytest.raises(TypeError, match="str"):
             TenantId(123)  # type: ignore[arg-type]
+
+
+class TestRevisionTokenAndContexts:
+    def test_revision_token_requires_tenant_and_revision_values(self) -> None:
+        tenant = TenantId("acme")
+        revision = Revision(7)
+
+        token = RevisionToken(tenant, revision)
+
+        assert token.tenant == tenant
+        assert token.revision == revision
+        with pytest.raises(TypeError, match="TenantId"):
+            RevisionToken("acme", revision)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="Revision"):
+            RevisionToken(tenant, 7)  # type: ignore[arg-type]
+
+    def test_write_context_and_write_result_validate_token_types(self) -> None:
+        tenant = TenantId("acme")
+        token = RevisionToken(tenant, Revision(3))
+
+        context = WriteContext(tenant)
+        result = WriteResult(token)
+
+        assert context.tenant == tenant
+        assert result.token == token
+        assert result.tenant == tenant
+        assert result.revision == Revision(3)
+        with pytest.raises(TypeError, match="TenantId"):
+            WriteContext("acme")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="RevisionToken"):
+            WriteResult(token.revision)  # type: ignore[arg-type]
+
+    def test_read_context_exposes_token_and_validates_fields(self) -> None:
+        tenant = TenantId("acme")
+        revision = Revision(11)
+
+        context = ReadContext(tenant, revision)
+
+        assert context.token == RevisionToken(tenant, revision)
+        with pytest.raises(TypeError, match="TenantId"):
+            ReadContext("acme", revision)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="Revision"):
+            ReadContext(tenant, 11)  # type: ignore[arg-type]
 
 
 class TestRevisionConsistency:
@@ -75,3 +122,18 @@ class TestRevisionConsistency:
 
         with pytest.raises(ValueError, match="tenant does not match"):
             revision_for_consistency(head, AtExactRevision(other))
+
+    def test_consistency_wrappers_require_revision_tokens(self) -> None:
+        with pytest.raises(TypeError, match="RevisionToken"):
+            AtLeastAsFresh(Revision(1))  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="RevisionToken"):
+            AtExactRevision(Revision(1))  # type: ignore[arg-type]
+
+    def test_revision_for_consistency_rejects_unknown_policy(self) -> None:
+        class UnknownConsistency(Consistency):
+            pass
+
+        head = RevisionToken(TenantId("acme"), Revision(3))
+
+        with pytest.raises(TypeError, match="UnknownConsistency"):
+            revision_for_consistency(head, UnknownConsistency())

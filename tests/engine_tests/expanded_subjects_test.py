@@ -60,3 +60,48 @@ class TestExpandedSubjects:
         assert result.users == set()
         assert result.usersets == {"group:*"}
         assert result.wildcard_exclusions == {}
+
+    def test_union_of_wildcards_intersects_exclusions(self) -> None:
+        left = _ExpandedSubjects.from_subject_set(
+            SubjectSet(wildcard_exclusions={"user:*": {"user:alice", "user:bob"}})
+        )
+        right = _ExpandedSubjects.from_subject_set(
+            SubjectSet(wildcard_exclusions={"user:*": {"user:bob", "user:carol"}})
+        )
+
+        result = left.union(right).to_subject_set()
+
+        assert result.users == set()
+        assert result.usersets == set()
+        assert result.wildcard_exclusions == {"user:*": {"user:bob"}}
+
+    def test_intersection_of_wildcards_unions_exclusions(self) -> None:
+        left = _ExpandedSubjects.from_subject_set(
+            SubjectSet(wildcard_exclusions={"user:*": {"user:alice"}})
+        )
+        right = _ExpandedSubjects.from_subject_set(
+            SubjectSet(wildcard_exclusions={"user:*": {"user:bob"}})
+        )
+
+        result = left.intersection(right).to_subject_set()
+
+        assert result.users == set()
+        assert result.usersets == set()
+        assert result.wildcard_exclusions == {"user:*": {"user:alice", "user:bob"}}
+
+    def test_wildcard_exclusions_ignore_other_namespaces_and_usersets(self) -> None:
+        result = _ExpandedSubjects.from_rendered_subjects(
+            set(),
+            {"user:*": {"group:eng#member", "service:bot", "user:alice"}},
+        ).to_subject_set()
+
+        assert result.wildcard_exclusions == {"user:*": {"user:alice"}}
+
+    def test_subject_set_union_intersection_and_difference_wrappers(self) -> None:
+        all_users = SubjectSet(users={"user:*"})
+        alice = SubjectSet(users={"user:alice"})
+        bob = SubjectSet(users={"user:bob"})
+
+        assert all_users.union(alice).users == {"user:*"}
+        assert all_users.intersection(alice).users == {"user:alice"}
+        assert all_users.difference(bob).wildcard_exclusions == {"user:*": {"user:bob"}}

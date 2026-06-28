@@ -38,6 +38,10 @@ class TestObj:
         with pytest.raises(TypeError):
             Obj("document", EntityId("readme"))  # type: ignore[arg-type]
 
+    def test_direct_instantiation_rejects_raw_id(self) -> None:
+        with pytest.raises(TypeError, match="EntityId"):
+            Obj(NamespaceId("document"), "readme")  # type: ignore[arg-type]
+
     def test_to_from_dict_round_trip(self) -> None:
         original = Obj(NamespaceId("document"), EntityId("readme"))
         as_dict = original.to_dict()

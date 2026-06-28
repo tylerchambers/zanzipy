@@ -1,6 +1,11 @@
 import pytest
 
-from zanzipy.dsl.builder import DslCodec, NamespaceBuilder, SchemaBuilder
+from zanzipy.dsl.builder import (
+    DslCodec,
+    NamespaceBuilder,
+    SchemaBuilder,
+    get_default_registry,
+)
 from zanzipy.schema.registry import SchemaRegistry
 from zanzipy.schema.rules import (
     ComputedUsersetRule,
@@ -9,6 +14,7 @@ from zanzipy.schema.rules import (
     TupleToUsersetRule,
     UnionRule,
 )
+from zanzipy.schema.subjects import SubjectReference
 
 
 class TestDslCodec:
@@ -82,6 +88,45 @@ class TestDslCodec:
         assert len(cs) == 1
         assert isinstance(cs[0], ComputedUsersetRule)
         assert cs[0].relation == "viewer"
+
+    def test_parse_subject_strips_outer_whitespace(self):
+        codec = DslCodec()
+
+        subject = codec.parse_subject("  group#member  ")
+
+        assert subject.namespace.value == "group"
+        assert subject.relation is not None
+        assert subject.relation.value == "member"
+
+    def test_parse_subject_rejects_non_string(self):
+        codec = DslCodec()
+
+        with pytest.raises(ValueError, match="non-empty"):
+            codec.parse_subject(None)  # type: ignore[arg-type]
+
+    def test_to_subjects_preserves_existing_subject_reference(self):
+        codec = DslCodec()
+        subject = SubjectReference(namespace="user")
+
+        assert codec.to_subjects(subject) == (subject,)
+
+    def test_to_subjects_none_is_empty_tuple(self):
+        assert DslCodec().to_subjects(None) == ()
+
+    def test_to_subjects_rejects_non_subject_items(self):
+        with pytest.raises(TypeError, match="strings or SubjectReference"):
+            DslCodec().to_subjects(["user", object()])  # type: ignore[list-item]
+
+    def test_name_to_rule_strips_operands(self):
+        rule = DslCodec().name_to_rule(" parent -> viewer ")
+
+        assert isinstance(rule, TupleToUsersetRule)
+        assert rule.tuple_relation == "parent"
+        assert rule.computed_relation == "viewer"
+
+    def test_name_to_rule_rejects_blank_operand(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            DslCodec().name_to_rule("   ")
 
 
 class TestNamespaceBuilder:
@@ -178,6 +223,38 @@ class TestNamespaceBuilder:
         )
         assert "p" in ns.permissions
 
+    def test_relation_requires_allowed_subjects(self):
+        with pytest.raises(ValueError, match="at least one allowed subject"):
+            NamespaceBuilder("doc").relation("viewer")
+
+    def test_permission_rejects_multiple_operators(self):
+        with pytest.raises(ValueError, match="Must specify exactly one"):
+            NamespaceBuilder("doc").permission(
+                "can_view",
+                union="viewer",
+                intersection="editor",
+            )
+
+    def test_permission_exclusion_rejects_string_operand_sequence(self):
+        with pytest.raises(ValueError, match="exclusion requires exactly two operands"):
+            NamespaceBuilder("doc").permission(
+                "can_view",
+                exclusion="viewer",  # type: ignore[arg-type]
+            )
+
+    def test_done_without_owner_raises(self):
+        with pytest.raises(ValueError, match="inline schema namespaces"):
+            NamespaceBuilder("doc").done()
+
+    def test_exclusion_rule_requires_operands_when_called_directly(self):
+        with pytest.raises(ValueError, match="exclusion requires exactly two operands"):
+            NamespaceBuilder("doc")._exclusion_rule(None)
+
+
+class TestDefaultRegistry:
+    def test_get_default_registry_returns_schema_builder_default(self):
+        assert SchemaBuilder().build() is get_default_registry()
+
 
 class TestSchemaBuilder:
     def test_register_many_and_validate(self):
@@ -206,3 +283,14 @@ class TestSchemaBuilder:
         ns = reg.get_namespace("doc")
         assert "viewer" in ns.relations
         assert "can_view" in ns.permissions
+
+    def test_build_clears_pending_namespaces(self):
+        registry = SchemaRegistry()
+        builder = SchemaBuilder(registry)
+        builder.add_namespace(
+            NamespaceBuilder("doc").relation("viewer", subjects=["user"]).build()
+        )
+
+        assert builder.build() is registry
+        assert builder.build() is registry
+        assert registry.list_namespaces() == ["doc"]

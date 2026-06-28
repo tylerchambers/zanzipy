@@ -127,6 +127,30 @@ class TestRelationTuple:
                 Subject.from_string("user:alice"),
             )
 
+    def test_direct_instantiation_rejects_raw_relation(self) -> None:
+        bad_relation = cast("Relation", "owner")
+
+        with pytest.raises(TypeError, match="Relation"):
+            RelationTuple(
+                Obj(NamespaceId("document"), EntityId("readme")),
+                bad_relation,
+                Subject.from_string("user:alice"),
+            )
+
+    def test_direct_instantiation_rejects_raw_subject(self) -> None:
+        bad_subject = cast("Subject", "user:alice")
+
+        with pytest.raises(TypeError, match="Subject"):
+            RelationTuple(
+                Obj(NamespaceId("document"), EntityId("readme")),
+                Relation("owner"),
+                bad_subject,
+            )
+
+    def test_from_strings_wraps_component_validation_errors(self) -> None:
+        with pytest.raises(InvalidTupleFormatError, match="Invalid tuple format"):
+            RelationTuple.from_strings("document:readme", "owner", "user:")
+
     def test_repr(self) -> None:
         t = RelationTuple.from_string(self.BASIC)
         assert repr(t) == (

@@ -1,3 +1,4 @@
+import sys
 import types
 
 from flask import Flask
@@ -105,6 +106,80 @@ class TestFlaskZanzibarExtension:
         with configured_app.app_context():
             assert configured_ext.client is not None
             assert configured_ext.client.max_depth == 3
+
+    def test_constructor_accepts_app_and_delegates_delete_and_expand(self) -> None:
+        app = Flask("constructor-app")
+        app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(registry=_make_registry())
+        app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+
+        ext = Zanzibar(app)
+
+        with app.app_context():
+            ext.write("document:doc1", "owner", "user:alice")
+            expanded = ext.expand("document:doc1", "can_view")
+            assert expanded.users == {"user:alice"}
+
+            ext.delete("document:doc1", "owner", "user:alice")
+
+            assert ext.check("document:doc1", "can_view", "user:alice") is False
+
+    def test_context_binding_without_flask_signals_uses_before_request(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import builtins
+
+        import zanzipy.integration.flask as flask_integration
+
+        class _FallbackApp:
+            def __init__(self) -> None:
+                self.extensions: dict[str, object] = {}
+                self.callbacks: list[object] = []
+
+            def before_request(self, callback: object) -> None:
+                self.callbacks.append(callback)
+
+        real_import = builtins.__import__
+
+        def fail_flask_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "flask":
+                raise ImportError("flask unavailable")
+            return real_import(name, *args, **kwargs)
+
+        client = ZanzibarClient(
+            relations_repository=InMemoryRelationRepository(),
+            schema=_make_registry(),
+        )
+        state = flask_integration._ZanzibarState(
+            client=client,
+            engine=flask_integration.ZanzibarEngine(client),
+        )
+        app = _FallbackApp()
+        monkeypatch.setattr(builtins, "__import__", fail_flask_import)
+
+        Zanzibar()._install_context_binding(app, state)
+
+        assert len(app.callbacks) == 1
+
+    def test_context_teardown_ignores_other_apps_and_missing_tokens(self) -> None:
+        from flask import g
+
+        from zanzipy.integration.flask import (
+            _CONTEXT_HANDLERS_KEY,
+            _ENGINE_TOKEN_ATTR,
+        )
+
+        app = self._create_app()
+        other_app = Flask("other-context-sender")
+        _pushed_handler, popped_handler = app.extensions[_CONTEXT_HANDLERS_KEY]
+
+        with app.app_context():
+            popped_handler(other_app)
+            if hasattr(g, _ENGINE_TOKEN_ATTR):
+                delattr(g, _ENGINE_TOKEN_ATTR)
+            popped_handler(app)
+
+            assert not hasattr(g, _ENGINE_TOKEN_ATTR)
 
     def test_write_and_check_via_proxy(self) -> None:
         app = self._create_app()
@@ -265,3 +340,172 @@ class TestFlaskZanzibarExtension:
         with pytest.raises(TypeError, match="cache boom"):
             Zanzibar().init_app(app)
         assert calls == 1
+
+    def test_missing_schema_config_raises_resolution_error(self) -> None:
+        app = Flask("missing-schema")
+        app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+
+        with pytest.raises(RuntimeError, match="ZANZIBAR_SCHEMA not provided"):
+            Zanzibar().init_app(app)
+
+    def test_missing_relations_repo_config_raises_resolution_error(self) -> None:
+        app = Flask("missing-repo")
+        app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(registry=_make_registry())
+
+        with pytest.raises(RuntimeError, match="ZANZIBAR_RELATIONS_REPO not provided"):
+            Zanzibar().init_app(app)
+
+    def test_string_schema_path_resolves_registry_attribute(self) -> None:
+        app = Flask("schema-path")
+        registry = _make_registry()
+        module_name = "zanzipy_test_schema_module"
+        sys.modules[module_name] = types.SimpleNamespace(registry=registry)
+        app.config["ZANZIBAR_SCHEMA"] = f"{module_name}:registry"
+        app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+
+        try:
+            ext = Zanzibar()
+            ext.init_app(app)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        with app.app_context():
+            assert ext.client is not None
+            assert ext.client.schema is registry
+
+    def test_relation_repo_factories_use_supported_call_signatures(self) -> None:
+        app_factory_arg = Flask("repo-factory-app-arg")
+        app_factory_arg.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        app_factory_arg_calls = []
+
+        def repo_factory_with_app(app: Flask) -> InMemoryRelationRepository:
+            app_factory_arg_calls.append(app)
+            return InMemoryRelationRepository()
+
+        app_factory_arg.config["ZANZIBAR_RELATIONS_REPO"] = repo_factory_with_app
+        Zanzibar().init_app(app_factory_arg)
+
+        assert app_factory_arg_calls == [app_factory_arg]
+
+        no_arg_app = Flask("repo-factory-no-arg")
+        no_arg_app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        no_arg_calls = []
+
+        def repo_factory_without_args() -> InMemoryRelationRepository:
+            no_arg_calls.append("called")
+            return InMemoryRelationRepository()
+
+        no_arg_app.config["ZANZIBAR_RELATIONS_REPO"] = repo_factory_without_args
+        Zanzibar().init_app(no_arg_app)
+
+        assert no_arg_calls == ["called"]
+
+    def test_opaque_signature_factory_falls_back_to_app_argument(self) -> None:
+        class OpaqueRepoFactory:
+            def __init__(self) -> None:
+                self.seen_app = None
+
+            @property
+            def __signature__(self) -> object:
+                raise ValueError("opaque signature")
+
+            def __call__(self, app: Flask) -> InMemoryRelationRepository:
+                self.seen_app = app
+                return InMemoryRelationRepository()
+
+        app = Flask("opaque-repo-factory")
+        app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(registry=_make_registry())
+        factory = OpaqueRepoFactory()
+        app.config["ZANZIBAR_RELATIONS_REPO"] = factory
+
+        Zanzibar().init_app(app)
+
+        assert factory.seen_app is app
+
+    def test_reinit_replaces_existing_context_handlers(self) -> None:
+        from zanzipy.integration.flask import _CONTEXT_HANDLERS_KEY
+
+        app = self._create_app()
+        first_handlers = app.extensions[_CONTEXT_HANDLERS_KEY]
+
+        app.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(registry=_make_registry())
+        app.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        app.extensions["zanzibar"].init_app(app)
+
+        assert app.extensions[_CONTEXT_HANDLERS_KEY] != first_handlers
+
+    def test_extension_rejects_different_current_app(self) -> None:
+        zanzibar1 = Zanzibar()
+        app1 = Flask("mismatch-app-1")
+        app1.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        app1.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        zanzibar1.init_app(app1)
+
+        zanzibar2 = Zanzibar()
+        app2 = Flask("mismatch-app-2")
+        app2.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+            registry=_make_registry()
+        )
+        app2.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+        zanzibar2.init_app(app2)
+
+        with (
+            app2.app_context(),
+            pytest.raises(RuntimeError, match="not initialized on this app"),
+        ):
+            _ = zanzibar1.client
+
+    def test_extension_reports_missing_current_app_state(self) -> None:
+        from zanzipy.integration.flask import _STATE_KEY
+
+        app = self._create_app()
+        ext = app.extensions["zanzibar"]
+        app.extensions.pop(_STATE_KEY)
+
+        with app.app_context(), pytest.raises(RuntimeError, match="state missing"):
+            _ = ext.client
+
+    def test_second_app_resets_single_app_default_engine(self) -> None:
+        from zanzipy.engine_integration import (
+            ZanzibarEngine,
+            configure_authorization,
+            get_authorization_engine,
+            reset_authorization,
+        )
+
+        previous_engine = ZanzibarEngine(
+            ZanzibarClient(
+                relations_repository=InMemoryRelationRepository(),
+                schema=_make_registry(),
+            )
+        )
+        token = configure_authorization(previous_engine)
+
+        try:
+            zanzibar = Zanzibar()
+            app1 = Flask("default-reset-1")
+            app1.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+                registry=_make_registry()
+            )
+            app1.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+            zanzibar.init_app(app1)
+
+            assert get_authorization_engine() is zanzibar.engine
+
+            app2 = Flask("default-reset-2")
+            app2.config["ZANZIBAR_SCHEMA"] = types.SimpleNamespace(
+                registry=_make_registry()
+            )
+            app2.config["ZANZIBAR_RELATIONS_REPO"] = InMemoryRelationRepository
+            zanzibar.init_app(app2)
+
+            assert get_authorization_engine() is previous_engine
+            assert zanzibar.engine is None
+        finally:
+            reset_authorization(token)
