@@ -7,6 +7,7 @@ domain models to implement only minimal reference methods.
 from typing import TYPE_CHECKING
 
 from zanzipy.engine_integration import get_authorization_engine
+from zanzipy.storage.revision import AtExactRevision
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -87,12 +88,23 @@ class AuthorizableResource:
         return results
 
     def get_permissions(self, subject: AuthorizableSubject) -> set[str]:
-        """Return schema permissions granted to the subject on this resource."""
+        """Return schema permissions granted to the subject on one resource snapshot."""
         engine = get_authorization_engine()
         obj = self.get_resource_ref()
+        subject_ref = subject.get_subject_ref()
         ns = engine.schema.get_namespace(str(obj.namespace))
         permission_names = tuple(ns.permissions.keys())
-        return {name for name in permission_names if self.check(subject, name)}
+        consistency = AtExactRevision(engine.head_token())
+        return {
+            name
+            for name in permission_names
+            if engine.check(
+                subject=subject_ref,
+                permission=name,
+                resource=obj,
+                consistency=consistency,
+            )
+        }
 
 
 class AuthorizableSubject:
