@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 from zanzipy.models import TupleFilter
+from zanzipy.storage.revision import RelationshipOperation
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -17,6 +18,40 @@ if TYPE_CHECKING:
         WriteContext,
         WriteResult,
     )
+
+
+class RelationWriteValidationMixin:
+    """Shared write-batch validation for relation repository implementations."""
+
+    def _validated_mutation_batch(
+        self,
+        mutations: Iterable[TupleMutation],
+    ) -> tuple[TupleMutation, ...]:
+        """Return a write batch after rejecting ambiguous same-tuple operations.
+
+        Durable repositories store writes and deletes by revision, not by a
+        per-mutation sequence. A batch that both writes and deletes the same
+        tuple cannot be replayed consistently from ``watch``, so reject it
+        before any backend state changes.
+        """
+
+        batch = tuple(mutations)
+        operations_by_key: dict[str, RelationshipOperation] = {}
+        for mutation in batch:
+            operation = mutation.operation
+            if (
+                operation is not RelationshipOperation.WRITE
+                and operation is not RelationshipOperation.DELETE
+            ):
+                continue
+
+            tuple_key = str(mutation.relation_tuple)
+            previous = operations_by_key.setdefault(tuple_key, operation)
+            if previous is not operation:
+                raise ValueError(
+                    f"conflicting tuple mutations for {tuple_key} in one write batch"
+                )
+        return batch
 
 
 @runtime_checkable

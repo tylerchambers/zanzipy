@@ -5,8 +5,6 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from zanzipy.models import RelationTuple
 
 
@@ -138,38 +136,6 @@ class TupleMutation:
             relation_tuple=relation_tuple,
             operation=RelationshipOperation.DELETE,
         )
-
-
-def validated_mutation_batch(
-    mutations: Iterable[TupleMutation],
-) -> tuple[TupleMutation, ...]:
-    """Return a write batch after rejecting opposing operations for one tuple.
-
-    A single storage revision cannot safely represent both a write and a delete
-    for the same tuple unless the backend persists per-mutation sequence order.
-    Rejecting those ambiguous batches keeps durable watch streams replayable.
-    """
-
-    batch = tuple(mutations)
-    operations_by_key: dict[str, RelationshipOperation] = {}
-    for mutation in batch:
-        operation = mutation.operation
-        if (
-            operation is not RelationshipOperation.WRITE
-            and operation is not RelationshipOperation.DELETE
-        ):
-            continue
-
-        tuple_key = str(mutation.relation_tuple)
-        previous = operations_by_key.get(tuple_key)
-        if previous is None:
-            operations_by_key[tuple_key] = operation
-            continue
-        if previous is not operation:
-            raise ValueError(
-                f"conflicting tuple mutations for {tuple_key} in one write batch"
-            )
-    return batch
 
 
 @dataclass(frozen=True, slots=True)

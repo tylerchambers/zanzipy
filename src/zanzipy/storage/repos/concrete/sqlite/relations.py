@@ -4,7 +4,10 @@ from contextlib import suppress
 import sqlite3
 from typing import TYPE_CHECKING
 
-from zanzipy.storage.repos.abstract.relations import RelationRepository
+from zanzipy.storage.repos.abstract.relations import (
+    RelationRepository,
+    RelationWriteValidationMixin,
+)
 from zanzipy.storage.repos.concrete._rows import (
     RELATION_TUPLE_COLUMNS,
     StoredRelationTuple,
@@ -21,7 +24,6 @@ from zanzipy.storage.revision import (
     TupleMutation,
     WriteContext,
     WriteResult,
-    validated_mutation_batch,
 )
 
 if TYPE_CHECKING:
@@ -39,7 +41,7 @@ _VISIBLE_AT = (
 )
 
 
-class SQLiteRelationRepository(RelationRepository):
+class SQLiteRelationRepository(RelationWriteValidationMixin, RelationRepository):
     """SQLite repository using tenant-scoped created/deleted revisions."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
@@ -134,7 +136,7 @@ class SQLiteRelationRepository(RelationRepository):
         Raises:
             ValueError: If a mutation contains an unknown operation.
         """
-        mutations = validated_mutation_batch(mutations)
+        mutations = self._validated_mutation_batch(mutations)
         revision: Revision | None = None
         self._conn.execute("BEGIN IMMEDIATE")
         try:

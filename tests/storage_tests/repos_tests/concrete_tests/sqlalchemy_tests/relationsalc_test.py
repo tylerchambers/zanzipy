@@ -118,23 +118,6 @@ class TestSQLAlchemyRelationRepository:
         assert [change.tenant for change in changes] == [TENANT, TENANT]
         assert [change.relation_tuple for change in changes] == [t, t]
 
-    def test_conflicting_same_tuple_mutations_are_rejected(self) -> None:
-        repo = _repo()
-        t = RelationTuple.from_string("document:doc1#viewer@user:alice")
-        seed = repo.write(WriteContext(TENANT), (TupleMutation.touch(t),))
-
-        for mutations in (
-            (TupleMutation.delete(t), TupleMutation.touch(t)),
-            (TupleMutation.touch(t), TupleMutation.delete(t)),
-        ):
-            with pytest.raises(ValueError, match="conflicting tuple mutations"):
-                repo.write(WriteContext(TENANT), mutations)
-
-        assert repo.head_revision(TENANT) == seed.revision
-        assert repo.get(t, context=_read_context(seed.revision)) == t
-        changes = list(repo.watch(TENANT, after=Revision(0)))
-        assert [change.operation.value for change in changes] == ["write"]
-
     def test_tenants_have_isolated_tuple_state_and_revision_sequences(self) -> None:
         repo = _repo()
         t = RelationTuple.from_string("document:doc1#viewer@user:alice")

@@ -4,7 +4,10 @@ from collections.abc import Callable  # noqa: TC003
 from importlib import import_module
 from typing import TYPE_CHECKING, cast
 
-from zanzipy.storage.repos.abstract.relations import RelationRepository
+from zanzipy.storage.repos.abstract.relations import (
+    RelationRepository,
+    RelationWriteValidationMixin,
+)
 from zanzipy.storage.repos.concrete._rows import (
     RELATION_TUPLE_COLUMNS,
     StoredRelationTuple,
@@ -21,7 +24,6 @@ from zanzipy.storage.revision import (
     TupleMutation,
     WriteContext,
     WriteResult,
-    validated_mutation_batch,
 )
 
 if TYPE_CHECKING:
@@ -36,7 +38,7 @@ _TABLE_NAME = "relation_tuples"
 _REVISIONS_TABLE_NAME = "revisions"
 
 
-class SQLAlchemyRelationRepository(RelationRepository):
+class SQLAlchemyRelationRepository(RelationWriteValidationMixin, RelationRepository):
     """SQLAlchemy repository using tenant-scoped created/deleted revisions."""
 
     def __init__(self, session_factory: Callable[[], Session]) -> None:
@@ -152,7 +154,7 @@ class SQLAlchemyRelationRepository(RelationRepository):
             ValueError: If a mutation contains an unknown operation.
         """
         retry_errors = (self._sa.exc.IntegrityError, self._sa.exc.OperationalError)
-        mutations = validated_mutation_batch(mutations)
+        mutations = self._validated_mutation_batch(mutations)
         for attempt in range(3):
             session = self._session_factory()
             revision: Revision | None = None
