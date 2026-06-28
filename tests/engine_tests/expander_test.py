@@ -1,6 +1,8 @@
 import pytest
 
+from zanzipy.engine.checker import CheckEngine
 from zanzipy.engine.expander import ExpansionEngine
+from zanzipy.models.check import CheckRequest
 from zanzipy.models.tuple import RelationTuple
 from zanzipy.schema.compiled import CompiledAuthorizationModel
 from zanzipy.schema.namespace import NamespaceDef
@@ -368,6 +370,145 @@ class TestExpansionEngine:
         )
         assert viewer_without_banned.users == {"user:bob"}
         assert viewer_without_banned.usersets == set()
+
+    def test_wildcard_intersection_materializes_finite_subject(self) -> None:
+        registry = SchemaRegistry()
+        document_ns = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "viewer",
+                    (
+                        SubjectReference.from_dict(
+                            {"namespace": "user", "wildcard": True}
+                        ),
+                    ),
+                ),
+                RelationDef.with_subjects(
+                    "editor",
+                    (SubjectReference.from_dict({"namespace": "user"}),),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="can_edit",
+                    rewrite=IntersectionRule(
+                        children=(
+                            ComputedUsersetRule("viewer"),
+                            ComputedUsersetRule("editor"),
+                        )
+                    ),
+                ),
+            ),
+        )
+        registry.register(document_ns)
+
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:spec#viewer@user:*")
+                ),
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:spec#editor@user:alice")
+                ),
+            ),
+        )
+        model = _model(registry)
+        context = _context(repo)
+        checker = CheckEngine(relations_repository=repo, authorization_model=model)
+        expander = ExpansionEngine(relations_repository=repo, authorization_model=model)
+
+        assert (
+            checker.check(
+                CheckRequest.from_strings("document:spec", "can_edit", "user:alice"),
+                context=context,
+            ).allowed
+            is True
+        )
+        assert (
+            checker.check(
+                CheckRequest.from_strings("document:spec", "can_edit", "user:bob"),
+                context=context,
+            ).allowed
+            is False
+        )
+
+        sset = expander.expand("document", "spec", "can_edit", context=context)
+        assert sset.users == {"user:alice"}
+        assert sset.usersets == set()
+        assert sset.wildcard_exclusions == {}
+
+    def test_wildcard_exclusion_preserves_exceptions(self) -> None:
+        registry = SchemaRegistry()
+        document_ns = NamespaceDef(
+            name="document",
+            relations=(
+                RelationDef.with_subjects(
+                    "viewer",
+                    (
+                        SubjectReference.from_dict(
+                            {"namespace": "user", "wildcard": True}
+                        ),
+                    ),
+                ),
+                RelationDef.with_subjects(
+                    "banned",
+                    (SubjectReference.from_dict({"namespace": "user"}),),
+                ),
+            ),
+            permissions=(
+                PermissionDef(
+                    name="can_download",
+                    rewrite=ExclusionRule(
+                        base=ComputedUsersetRule("viewer"),
+                        subtract=ComputedUsersetRule("banned"),
+                    ),
+                ),
+            ),
+        )
+        registry.register(document_ns)
+
+        repo = InMemoryRelationRepository()
+        repo.write(
+            WriteContext(DEFAULT_TENANT),
+            (
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:spec#viewer@user:*")
+                ),
+                TupleMutation.touch(
+                    RelationTuple.from_string("document:spec#banned@user:alice")
+                ),
+            ),
+        )
+        model = _model(registry)
+        context = _context(repo)
+        checker = CheckEngine(relations_repository=repo, authorization_model=model)
+        expander = ExpansionEngine(relations_repository=repo, authorization_model=model)
+
+        assert (
+            checker.check(
+                CheckRequest.from_strings(
+                    "document:spec", "can_download", "user:alice"
+                ),
+                context=context,
+            ).allowed
+            is False
+        )
+        assert (
+            checker.check(
+                CheckRequest.from_strings("document:spec", "can_download", "user:bob"),
+                context=context,
+            ).allowed
+            is True
+        )
+
+        sset = expander.expand("document", "spec", "can_download", context=context)
+        assert sset.users == set()
+        assert "user:*" not in sset.users
+        assert sset.usersets == set()
+        assert sset.wildcard_exclusions == {"user:*": {"user:alice"}}
 
     def test_exclusion_subtract_depth_cutoff_fails_closed(self) -> None:
         registry = SchemaRegistry()
