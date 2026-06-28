@@ -14,7 +14,12 @@ from zanzipy.schema.subjects import SubjectReference
 from zanzipy.storage.repos.concrete.memory.relations import (
     InMemoryRelationRepository,
 )
-from zanzipy.storage.revision import TenantId, TupleMutation, WriteContext
+from zanzipy.storage.revision import (
+    AtExactRevision,
+    TenantId,
+    TupleMutation,
+    WriteContext,
+)
 
 DEFAULT_TENANT = TenantId("default")
 
@@ -35,6 +40,27 @@ def _registry() -> SchemaRegistry:
         ),
         permissions=(
             PermissionDef(name="view", rewrite=ComputedUsersetRule("viewer")),
+        ),
+    )
+    reg.register(ns)
+    return reg
+
+
+def _two_permission_registry() -> SchemaRegistry:
+    reg = SchemaRegistry()
+    ns = NamespaceDef(
+        name="doc",
+        relations=(
+            RelationDef.with_subjects(
+                "ra", (SubjectReference.from_dict({"namespace": "user"}),)
+            ),
+            RelationDef.with_subjects(
+                "rb", (SubjectReference.from_dict({"namespace": "user"}),)
+            ),
+        ),
+        permissions=(
+            PermissionDef(name="pa", rewrite=ComputedUsersetRule("ra")),
+            PermissionDef(name="pb", rewrite=ComputedUsersetRule("rb")),
         ),
     )
     reg.register(ns)
@@ -183,6 +209,50 @@ class TestAuthorizableResourceDecorator:
 
         perms = d.get_permissions(alice)  # type: ignore[attr-defined]
         assert "view" in perms
+
+    def test_get_permissions_uses_one_revision_for_all_checks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = InMemoryRelationRepository()
+        client = ZanzibarClient(
+            relations_repository=repo, schema=_two_permission_registry()
+        )
+        engine = ZanzibarEngine(client)
+        configure_authorization(engine)
+
+        @authorizable_resource("doc")
+        class Doc:
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+        class User(AuthorizableSubject):
+            def __init__(self, id: str) -> None:
+                self.id = id
+
+            def get_subject_dict(self) -> dict:
+                return {"namespace": "user", "id": self.id}
+
+        doc = Doc("1")
+        alice = User("alice")
+        client.write("doc:1", "ra", "user:alice")
+
+        original_check = engine.check
+        seen_consistencies = []
+
+        def check_and_mutate(**kwargs: object) -> bool:
+            allowed = original_check(**kwargs)  # type: ignore[arg-type]
+            seen_consistencies.append(kwargs.get("consistency"))
+            if len(seen_consistencies) == 1:
+                client.delete("doc:1", "ra", "user:alice")
+                client.write("doc:1", "rb", "user:alice")
+            return allowed
+
+        monkeypatch.setattr(engine, "check", check_and_mutate)
+
+        assert doc.get_permissions(alice) == {"pa"}  # type: ignore[attr-defined]
+        assert len(seen_consistencies) == 2
+        assert all(isinstance(value, AtExactRevision) for value in seen_consistencies)
+        assert seen_consistencies[0] == seen_consistencies[1]
 
     def test_who_can_rejects_wildcard_exclusions(self) -> None:
         repo = InMemoryRelationRepository()

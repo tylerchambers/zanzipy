@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .models import Subject
     from .schema.registry import SchemaRegistry
     from .storage.repos.abstract.relations import RelationRepository
-    from .storage.revision import Consistency, WriteResult
+    from .storage.revision import Consistency, RevisionToken, WriteResult
 
 
 class ZanzibarEngine:
@@ -39,6 +39,10 @@ class ZanzibarEngine:
     def relations_repository(self) -> RelationRepository:
         """Return the relation repository used by the underlying client."""
         return self._client.relations_repository
+
+    def head_token(self) -> RevisionToken:
+        """Return the client tenant's current repository head token."""
+        return self._client.head_token()
 
     def write_tuple(
         self,
